@@ -1,0 +1,273 @@
+---
+execute:
+  warning: false
+format:
+  html:
+    code-fold: true
+---
+
+# PFAS mareano
+
+```{r}
+library(tidyverse)
+library(readxl)
+library(ggmap)
+library(janitor)
+library(ggrepel)
+library(GGally)
+library(targets)
+library(gt)
+library(DataExplorer)
+library(patchwork)
+library(ggh4x)
+```
+
+
+## Cleaning
+
+```{r data-cleaning}
+
+#exported to csv. Moved rows
+
+raw_data_top <- read_csv2("data/Hele_datasettet.csv", skip = 0, n_max = 177) %>% clean_names() %>% slice(-1) %>% 
+  select(
+    sample_id = sample_1,
+    year = cruise_3,
+    number = cruise_4,
+    from_cm = sample_interval_top_bottom_5,
+    to_cm = x6,
+    longitude = dde,
+    latitude = ddn,
+    depth_m = mbsl,
+    sample_id2 = x1096mc002,
+    from_cm_2 = sample_interval_top_bottom_12,
+    to_cm_2 = x13,
+    clay_fraction,
+    silt_fraction,
+    clay_silt_fraction = clay_silt,
+    toc, 
+    pfosa:x8_2_fts
+    ) %>% 
+  filter(
+    !is.na(
+      sample_id
+    ) &
+    !is.na(
+      year
+    )
+  ) %>% 
+    mutate(across(everything(), ~.x %>% str_replace(",", "."))) %>% 
+  mutate(across(!matches("sample"), as.numeric))
+
+newnames <- (read_csv2("data/Hele_datasettet.csv", skip = 178) %>% clean_names())[1, 16:28] %>% as_vector()
+
+raw_data_bottom <- read_csv2("data/Hele_datasettet.csv", skip = 178) %>% clean_names() %>% 
+  rename_with(.cols = x16:x28, ~newnames) %>% 
+  clean_names() %>% 
+  slice(-1) %>% 
+    select(
+    sample_id = sample,
+    year = cruise_3,
+    number = cruise_4,
+    from_cm = sample_interval_top_bottom_5,
+    to_cm = x6,
+    longitude = dde,
+    latitude = ddn,
+    depth_m = mbsl,
+    sample_id2 = x1096mc002,
+    from_cm_2 = sample_interval_top_bottom_12,
+    to_cm_2 = x13,
+    clay_fraction,
+    silt_fraction,
+    clay_silt_fraction = clay_silt_percent,
+    toc = toc_percent,
+    pfos:pf_tri_a
+    ) %>% 
+  filter(
+    !is.na(
+      sample_id
+    ) & !is.na(sample_id2) &
+    !is.na(
+      year
+    )
+  ) %>% 
+  mutate(across(everything(), ~.x %>% str_replace(",", "."))) %>% 
+  mutate(across(!matches("sample"), as.numeric))
+  
+pfas10 <- raw_data_bottom %>% select(pfos:pf_tri_a) %>% names()
+
+raw_data <- bind_rows(raw_data_top, raw_data_bottom) %>% rowwise() %>% 
+  mutate(sum_pfas10 = sum(across(all_of(pfas10)), na.rm = TRUE)) %>% rowwise() %>% 
+  mutate(clay_silt_fraction_are = sum(c(clay_fraction,silt_fraction), na.rm = TRUE)) %>% 
+  select(-clay_silt_fraction)
+
+in_top_not_bottom <- compare_df_cols(raw_data_top, raw_data_bottom) %>% filter(is.na(raw_data_top) != is.na(raw_data_bottom)) %>% pull(column_name) %>% as_vector()
+
+```
+Møte PFAS:
+
+* Laste ned Mareano. Inorganic: TOC, clay, silt og Organic. Måle samme stasjon, men ikke prøve. Kan sammenstilles vha. enten id? eller stasjonsnr. Samme stasjonsnr for ulik kjerne og snitt.
+
+* Se på enkeltkomponenter PFA, sammenhenger?
+* Forskjell i Snitt per område.
+* Hvordan korrigere for kornstørrelse?
+Lage plot av kart med konsentrasjner korrigert for TOC og clay/silt.
+Høye bakgrunnsnivåer overalt.
+Correct for grain size: equal everywhere - long transported. Which model?
+
+Mulige faktorer:
+* Grense for is
+* Havstrømmer
+* Tidligere overvåkning
+
+
+Comments:
+
+* Data divided into two sections, top and bottom. Bottom section are missing the colum names: **`r in_top_not_bottom %>% str_c(collapse = ", ")`**
+* Left-to right in the document, we have column duplicates for **sample_interval_top_bottom** and corresponding to bottom, as well as for **Full-ID**. These are not the same, at least for the **sample_interval_top_bottom**.
+* $\Sigma$PFAS10 = **`r  pfas10 %>% str_c(collapse = ", ")`** 
+* ERROR: **clay_silt_fraction** is not the same as **clay_fraction + clay_silt_fraction**.. data structure mismatch between csv and xlsx - different names?!
+* Check also sum PFAS and TOC.
+
+
+```{r}
+plot_missing(
+  raw_data %>% select(-(compare_df_cols(raw_data_top, raw_data_bottom) %>% filter(is.na(raw_data_top) != is.na(raw_data_bottom)) %>% pull(column_name) %>% as_vector())), ggtheme = theme_minimal())
+
+```
+
+Missing observations, except those not in both top and bottom.
+
+```{r}
+plot_histogram(raw_data)
+```
+
+
+```{r}
+raw_data %>%
+  ungroup() %>%
+  mutate(id = row_number()) %>% 
+  select(id, y_longitude = longitude, y_latitude = latitude, year, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10, depth_m) %>%
+  pivot_longer(cols = -id, names_to = "parameter", values_to = "value") %>%
+  ggplot(aes(value, id)) +
+  #reverse y axis:
+  scale_y_reverse() +
+  geom_point(size = 0.75) +
+  facet_wrap(~parameter, scales = "free", nrow = 3, ncol = 4)
+```
+
+
+
+## Exploration
+
+```{r map-year, eval = TRUE}
+
+loc_year_map <- ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = year), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 2015,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  guides(color = guide_colorbar(title = NULL))+
+  #title:
+  ggtitle("Location vs year")
+
+
+loc_conc_map <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = sum_pfas10), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 1,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  ggtitle("Sum PFAS10 vs location")
+
+year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Location vs year")
+
+loc_year_map + year_pos + loc_conc_map + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+
+```
+
+```{r}
+
+plot_correlation(raw_data %>% select(-sample_id, -sample_id2, -number, -in_top_not_bottom) %>% na.omit(), ggtheme = theme_minimal())
+
+ggpairs(raw_data %>% select(year, longitude, latitude, depth_m, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10) %>% na.omit(), progress = FALSE)
+
+```
+
+Collinearity, unbalanced sampling. Different areas sampled different years. Explore further.
+
+## Some correlations
+
+```{r}
+
+p1 <- raw_data %>% 
+  ggplot(aes(year, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "PFAS vs Year")
+
+p2 <- raw_data %>% 
+  ggplot(aes(toc, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "PFAS vs TOC")
+
+
+p3 <- raw_data %>% 
+  ggplot(aes(clay_silt_fraction_are, toc)) + geom_point() + geom_smooth()+labs(title = "ERROR: TOC vs clay+silt")
+
+p4 <- raw_data %>% 
+  ggplot(aes(clay_silt_fraction_are, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "ERROR: PFAS vs clay+silt")
+
+(p1+p2)/(p3+p4)
+
+```
+
+PFAS vs year: difficult to compare due to collinearities.
+
+PFAS vs TOC: increasing, heteroskedastic.
+
+TOC vs clay+silt: increasing, heteroskedastic.
+
+PFAS vs clay_silt: increasing slightly, heteroskedastic.
+
+## Collinearity
+
+```{r}
+# raw_data %>% select(year, longitude, latitude, depth_m, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10) %>% 
+# 
+#   mutate(across(everything(), ~ as.numeric(.x))) %>%
+#   pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>% View()
+#   ggplot(aes(as_factor(year), value)) +
+#   geom_point() + geom_boxplot()+
+#     stat_summary(fun = "mean", geom = "point", color = "red", size = 3, shape = 3)+
+#   theme(
+#       axis.text.x = element_text(angle = 90, hjust = 1)
+#     )+
+#   ggh4x::facet_grid2(species ~ variable, scales = "free_y", independent = "y")
+```
+
