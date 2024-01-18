@@ -8,7 +8,8 @@ format:
 
 # PFAS survey
 
-```{r}
+```{r setup-cleaning}
+# packages
 library(tidyverse)
 library(readxl)
 library(ggmap)
@@ -20,133 +21,95 @@ library(gt)
 library(DataExplorer)
 library(patchwork)
 library(ggh4x)
-```
+library(ggthemes)
 
-## Cleaning
+# set theme
+survey_theme <- theme_few()
+theme_set(survey_theme)
 
-```{r data-cleaning}
+# to fix shifted column names
+newnames <- (read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>% clean_names())[1, 16:29] %>% as_vector()
 
-#exported to csv. Moved rows
-
-raw_data_top <- read_csv2("data/Hele_datasettet.csv", skip = 0, n_max = 177) %>% clean_names() %>% slice(-1) %>% 
-  select(
-    sample_id = sample_1,
-    year = cruise_3,
-    number = cruise_4,
-    from_cm = sample_interval_top_bottom_5,
-    to_cm = x6,
-    longitude = dde,
-    latitude = ddn,
-    depth_m = mbsl,
-    sample_id2 = x1096mc002,
-    from_cm_2 = sample_interval_top_bottom_12,
-    to_cm_2 = x13,
-    clay_fraction,
-    silt_fraction,
-    clay_silt_fraction = clay_silt,
-    toc, 
-    pfosa:x8_2_fts
-    ) %>% 
-  filter(
-    !is.na(
-      sample_id
-    ) &
-    !is.na(
-      year
-    )
-  ) %>% 
-    mutate(across(everything(), ~.x %>% str_replace(",", "."))) %>% 
-  mutate(across(!matches("sample"), as.numeric))
-
-newnames <- (read_csv2("data/Hele_datasettet.csv", skip = 178) %>% clean_names())[1, 16:28] %>% as_vector()
-
-raw_data_bottom <- read_csv2("data/Hele_datasettet.csv", skip = 178) %>% clean_names() %>% 
-  rename_with(.cols = x16:x28, ~newnames) %>% 
-  clean_names() %>% 
+# appending correct column names
+raw_data <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
+  clean_names() %>%
+  rename_with(.cols = x16:x29, ~newnames) %>%
+  clean_names() %>%
   slice(-1) %>% 
-    select(
+  select(
     sample_id = sample,
     year = cruise_3,
     number = cruise_4,
-    from_cm = sample_interval_top_bottom_5,
-    to_cm = x6,
+    from_cm_o = sample_interval_top_bottom_5,
+    to_cm_o = x6,
     longitude = dde,
     latitude = ddn,
     depth_m = mbsl,
     sample_id2 = x1096mc002,
-    from_cm_2 = sample_interval_top_bottom_12,
-    to_cm_2 = x13,
+    sample_id3 = sample_2,
+    from_cm_i = sample_interval_top_bottom_12,
+    to_cm_i = x13,
     clay_fraction,
     silt_fraction,
     clay_silt_fraction = clay_silt_percent,
     toc = toc_percent,
-    pfos:pf_tri_a
-    ) %>% 
+    pfos:pf_tri_a,
+    -pf_dc_s,
+    sum_9_pfas = sum_10_pfas,
+  ) %>%
   filter(
-    !is.na(
-      sample_id
-    ) & !is.na(sample_id2) &
-    !is.na(
-      year
-    )
-  ) %>% 
-  mutate(across(everything(), ~.x %>% str_replace(",", "."))) %>% 
-  mutate(across(!matches("sample"), as.numeric))
+    !is.na(year)
+  ) %>%
+  mutate(across(!matches("sample"), as.numeric)) %>% 
+    #assign areas:
+  mutate(area = case_when(
+    row_number() %in% c(1:18) ~ "SV",
+    row_number() %in% c(19:45) ~ "BH mid",
+    row_number() %in% c(46:66) ~ "BH sør",
+    row_number() %in% c(67:89) ~ "NH",
+    row_number() %in% c(90:95) ~ "S",
+    TRUE ~ "Other"
+  ),
+  area = as.factor(area)) %>% 
+  # remove sample with uncertainty
+  filter(!(str_detect(sample_id3, "R3032")))
   
-pfas10 <- raw_data_bottom %>% select(pfos:pf_tri_a) %>% names()
-
-raw_data <- bind_rows(raw_data_top, raw_data_bottom) %>% rowwise() %>% 
-  mutate(sum_pfas10 = sum(across(all_of(pfas10)), na.rm = TRUE)) %>% rowwise() %>% 
-  mutate(clay_silt_fraction_are = sum(c(clay_fraction,silt_fraction), na.rm = TRUE)) %>% 
-  select(-clay_silt_fraction)
-
-in_top_not_bottom <- compare_df_cols(raw_data_top, raw_data_bottom) %>% filter(is.na(raw_data_top) != is.na(raw_data_bottom)) %>% pull(column_name) %>% as_vector()
-
-```
-Møte PFAS:
-
-* Laste ned Mareano. Inorganic: TOC, clay, silt og Organic. Måle samme stasjon, men ikke prøve. Kan sammenstilles vha. enten id? eller stasjonsnr. Samme stasjonsnr for ulik kjerne og snitt.
-
-* Se på enkeltkomponenter PFA, sammenhenger?
-* Forskjell i Snitt per område.
-* Hvordan korrigere for kornstørrelse?
-Lage plot av kart med konsentrasjner korrigert for TOC og clay/silt.
-Høye bakgrunnsnivåer overalt.
-Correct for grain size: equal everywhere - long transported. Which model?
-
-Mulige faktorer:
-* Grense for is
-* Havstrømmer
-* Tidligere overvåkning
-
-
-Comments:
-
-* Data divided into two sections, top and bottom. Bottom section are missing the colum names: **`r in_top_not_bottom %>% str_c(collapse = ", ")`**
-* Left-to right in the document, we have column duplicates for **sample_interval_top_bottom** and corresponding to bottom, as well as for **Full-ID**. These are not the same, at least for the **sample_interval_top_bottom**.
-* $\Sigma$PFAS10 = **`r  pfas10 %>% str_c(collapse = ", ")`** 
-* ERROR: **clay_silt_fraction** is not the same as **clay_fraction + clay_silt_fraction**.. data structure mismatch between csv and xlsx - different names?!
-* Check also sum PFAS and TOC.
-
-
-```{r}
-plot_missing(
-  raw_data %>% select(-(compare_df_cols(raw_data_top, raw_data_bottom) %>% filter(is.na(raw_data_top) != is.na(raw_data_bottom)) %>% pull(column_name) %>% as_vector())), ggtheme = theme_minimal())
+# raw_data %>% group_by(area) %>% 
+#   summarise(
+#     min_lat = min(latitude),
+#     max_lat = max(latitude),
+#     min_lon = min(longitude),
+#     max_long = max(longitude)
+#   )
 
 ```
 
-Missing observations, except those not in both top and bottom.
+## Todo
+* Hypotheses:
+  - Is there a difference in PFAS levels between the different areas, corrected for TOC and clay/silt?
+  - Describe levels of PFAS
+* Model:
+  - PFAS ~ area + TOC + clay/silt, poisson errors.
+
+
+## Data exploration
+
+### Missing data
+
+**sample_id3 == R3032** had a reported value that was below LOQ and is remove until the error is investigated. Other errors found in the chemical database and corrected in the enclosed data.
 
 ```{r}
-plot_histogram(raw_data)
+plot_missing(raw_data, ggtheme = survey_theme)
 ```
+Missing data for some variables.
 
+### Outliers in predictor or response variables
 
-```{r}
+```{r cleveland-dotplot}
 raw_data %>%
   ungroup() %>%
   mutate(id = row_number()) %>% 
-  select(id, y_longitude = longitude, y_latitude = latitude, year, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10, depth_m) %>%
+  select(id, year, longitude, latitude, clay_silt_fraction, toc, sum_9_pfas) %>%
   pivot_longer(cols = -id, names_to = "parameter", values_to = "value") %>%
   ggplot(aes(value, id)) +
   #reverse y axis:
@@ -155,9 +118,20 @@ raw_data %>%
   facet_wrap(~parameter, scales = "free", nrow = 3, ncol = 4)
 ```
 
+```{r}
+plot_histogram(raw_data %>% select(year,area,longitude, latitude, clay_silt_fraction, toc, sum_9_pfas), ggtheme = survey_theme)
+```
+* Potential outliers in TOC.
 
 
-## Exploration
+### Dependencies
+
+```{r}
+ggmap(tar_read(stadia_map))+
+  geom_point(aes(x = longitude, y = latitude, color = area), data = raw_data,)
+```
+
+
 
 ```{r map-year, eval = TRUE}
 
@@ -183,12 +157,14 @@ loc_year_map <- ggmap(tar_read(stadia_map)) +
   ) +
   guides(color = guide_colorbar(title = NULL))+
   #title:
-  ggtitle("Location vs year")
+  ggtitle("Loc vs year")
+
+year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Loc vs year")
 
 
 loc_conc_map <-
   ggmap(tar_read(stadia_map)) +
-  geom_point(aes(x = longitude, y = latitude, color = sum_pfas10), alpha = 0.65, data = raw_data %>%
+  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas), alpha = 0.65, data = raw_data %>%
     mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
   # check locations of interest
   # geom_text_repel(
@@ -207,66 +183,111 @@ loc_conc_map <-
     guide = "colourbar",
     aesthetics = "colour"
   ) +
-  ggtitle("Sum PFAS10 vs location")
+  ggtitle("\u03A39PFASvs loc")
 
-year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Location vs year")
+loc_conc <-  raw_data %>% ggplot(aes(sum_9_pfas, latitude))+geom_point()+geom_smooth()+labs(title = "\u03A39PFAS vs loc")
+  
+(loc_year_map | loc_conc_map)  + 
+  plot_layout(guides = "collect") & 
+  theme(legend.position = 'bottom', 
+        legend.text = element_text(angle = 30)
+                                )
 
-loc_year_map + year_pos + loc_conc_map + plot_layout(guides = "collect") & theme(legend.position = 'bottom')
+( year_pos + loc_conc )
 
 ```
+
+
+* Survey performed from `r min(raw_data$year)` to `r max(raw_data$year)`.
+* Different locations at different years.
+* Inorganic and organic measurements from separate cores at each location.
+    - Inorganic: TOC, clay, silt, clay/silt fraction
+    - Organic: Different PFAS.
+* Some hotspots identified.
+
 
 ```{r}
 
-plot_correlation(raw_data %>% select(-sample_id, -sample_id2, -number, -in_top_not_bottom) %>% na.omit(), ggtheme = theme_minimal())
-
-ggpairs(raw_data %>% select(year, longitude, latitude, depth_m, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10) %>% na.omit(), progress = FALSE)
+ggpairs(raw_data %>% dplyr::select(year,area, clay_silt_fraction, toc, sum_9_pfas) %>% na.omit(), progress = FALSE)+theme(axis.text.x = element_text(angle = 90, hjust = 1))
 
 ```
 
-Collinearity, unbalanced sampling. Different areas sampled different years. Explore further.
-
-## Some correlations
 
 ```{r}
 
 p1 <- raw_data %>% 
-  ggplot(aes(year, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "PFAS vs Year")
+  ggplot(aes(year, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs Year")
 
 p2 <- raw_data %>% 
-  ggplot(aes(toc, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "PFAS vs TOC")
+  ggplot(aes(toc, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs TOC")
 
 
 p3 <- raw_data %>% 
-  ggplot(aes(clay_silt_fraction_are, toc)) + geom_point() + geom_smooth()+labs(title = "ERROR: TOC vs clay+silt")
+  ggplot(aes(clay_silt_fraction, toc)) + geom_point() + geom_smooth()+labs(title = "TOC vs clay+silt")
 
 p4 <- raw_data %>% 
-  ggplot(aes(clay_silt_fraction_are, sum_pfas10)) + geom_point() + geom_smooth()+labs(title = "ERROR: PFAS vs clay+silt")
+  ggplot(aes(clay_silt_fraction, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs clay+silt")
 
 (p1+p2)/(p3+p4)
 
 ```
 
-PFAS vs year: difficult to compare due to collinearities.
 
-PFAS vs TOC: increasing, heteroskedastic.
+## Modeling
 
-TOC vs clay+silt: increasing, heteroskedastic.
+* Gamma is a candidate
+* As is "normal" Gaussian.
+* Potential issues with zero inflation:
+  - LOQ/2 if below LOQ
+  - zero-inflated model
+* Overdispersion using lm
+  - Using glm with Gamma distribution
+  - logtransforming response variable
 
-PFAS vs clay_silt: increasing slightly, heteroskedastic.
 
-## Collinearity
+https://stats.stackexchange.com/questions/67547/when-to-use-gamma-glms
+
+
+### Check LOQ/2
+
+Assess whether LOQ/2 is a better estimate of the true value, by looking at its distribution.
 
 ```{r}
-# raw_data %>% select(year, longitude, latitude, depth_m, clay_fraction, silt_fraction, clay_silt_fraction_are, toc, sum_pfas10) %>% 
-# 
-#   mutate(across(everything(), ~ as.numeric(.x))) %>%
-#   pivot_longer(cols = everything(), names_to = "variable", values_to = "value") %>% View()
-#   ggplot(aes(as_factor(year), value)) +
-#   geom_point() + geom_boxplot()+
-#     stat_summary(fun = "mean", geom = "point", color = "red", size = 3, shape = 3)+
-#   theme(
-#       axis.text.x = element_text(angle = 90, hjust = 1)
-#     )+
-#   ggh4x::facet_grid2(species ~ variable, scales = "free_y", independent = "y")
+#| fig-cap: "Polar axis plot"
+raw_data %>% 
+  ggplot(aes(sum_9_pfas)) + geom_histogram(binwidth = 0.025)
+
 ```
+
+
+
+# Gaussian linear model
+
+```{r}
+
+fit_lm <- lm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data)
+
+fit_lm %>% summary()
+
+fit_glm <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = gaussian(link = "log"))
+
+fit_glm_gamma <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = Gamma(link = "log"))
+
+
+```
+
+
+
+
+```{r}
+library(performance)
+
+compare_performance(fit_lm, fit_glm, fit_glm_gamma, fit_glm_gamma_inv)
+
+
+
+
+```
+
+
 

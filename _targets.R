@@ -53,7 +53,7 @@ tar_target(
   stadia_map,
     get_stadiamap(
       bbox = c(-10, 57.5, 50, 81),
-      zoom = 6,
+      zoom = 5,
       maptype = "alidade_smooth")
 )
 )
