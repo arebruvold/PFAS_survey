@@ -70,9 +70,7 @@ raw_data <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
     row_number() %in% c(90:95) ~ "S",
     TRUE ~ "Other"
   ),
-  area = as.factor(area)) %>% 
-  # remove sample with uncertainty
-  filter(!(str_detect(sample_id3, "R3032")))
+  area = as.factor(area))
   
 # raw_data %>% group_by(area) %>% 
 #   summarise(
