@@ -22,6 +22,7 @@ library(DataExplorer)
 library(patchwork)
 library(ggh4x)
 library(ggthemes)
+library(glmmTMB)
 
 # set theme
 survey_theme <- theme_few()
@@ -71,14 +72,90 @@ raw_data <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
     TRUE ~ "Other"
   ),
   area = as.factor(area))
-  
-# raw_data %>% group_by(area) %>% 
-#   summarise(
-#     min_lat = min(latitude),
-#     max_lat = max(latitude),
-#     min_lon = min(longitude),
-#     max_long = max(longitude)
-#   )
+
+ss_in <- "R1582BC7"
+mareano_renamer <- function(ss_in) {
+  ss_out <- ss_in %>%
+    str_replace_all("\\s", "") %>%
+    str_replace_all("BC", "BX")
+  if (str_detect(ss_out, "MC|BX", negate = TRUE)) {
+    return(ss_out)
+  }
+
+
+  ss_prefix <- str_extract(ss_out, ".+[BXMC]+")
+  ss_suffix <- str_extract(ss_out, "[0-9]+$")
+
+  if (str_length(ss_suffix) == 3) {
+    return(ss_out)
+  } else if (str_length(ss_suffix) == 2) {
+    return(paste0(ss_prefix, "0", ss_suffix))
+  } else if (str_length(ss_suffix) == 1) {
+    return(paste0(ss_prefix, "00", ss_suffix))
+  } else {
+    # break with error message "suffix string not of length 1, 2 or 3":
+    stop("suffix string not of length 1, 2 or 3")
+  }
+}
+hei <- raw_data %>% select(sample_id3) %>% mutate(sample_id_new = map_chr(sample_id3, mareano_renamer)) %>% filter(sample_id_new != sample_id3)
+
+# importing curated LOQs
+loqs_raw <- read_excel("data/LOQs.xlsx") %>%
+  clean_names() %>%
+  select(-enhet) %>%
+  rename(pfas = forbindelse)
+
+loqs_years <- loqs_raw %>%
+  filter(!(is.na(pfas))) %>%
+  mutate(across(-pfas, ~ str_replace_all(.x, "\\<", "") %>% as.numeric()),
+    pfas = make_clean_names(pfas)
+  ) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  pivot_longer(cols = matches("\\d{4}"), names_to = "analysis_year", values_to = "loq")
+
+loqs_samples <- loqs_raw %>%
+  filter(is.na(pfas)) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  select(-pfas) %>%
+  pivot_longer(
+    cols = matches("\\d{4}"),
+    names_to = "analysis_year",
+    values_to = "sample_id"
+  ) %>%
+  drop_na()
+
+loqs <- left_join(
+  loqs_years, loqs_samples,
+  by = c("analysis_year")
+) %>%
+  mutate(
+    sample_id = str_replace_all(sample_id, "BC", "BX"),
+    # d/dd to ddd
+    sample_id = if_else(str_detect(sample_id, "MC\\d{3}$|BX\\d{3}$"), sample_id,
+      sample_id %>% str_replace("\\d{3}$", ~
+                                paste()
+                                )
+    )
+  ) %>%
+  raw_data_long() <- raw_data %>%
+  pivot_longer(
+    cols = pfos:sum_9_pfas, names_to = "pfas", values_to = "pvas_value"
+  ) %>%
+  mutate(
+    sample_id3 = str_replace_all(sample_id3, "\\s", ""),
+    sample_id3 = str_replace_all(sample_id3, "BC", "BX")
+  ) %>%
+  distinct(sample_id3) %>%
+  rename(sample_id = sample_id3)
+
+library(arsenal)
+
+cmp <- comparedf(loqs, raw_data_long, by = "sample_id")
+
+cmp
+summary(cmp)
+
+cmp %>% diffs(what = "observations") %>% View()
 
 ```
 
@@ -87,17 +164,24 @@ raw_data <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
   - Is there a difference in PFAS levels between the different areas, corrected for TOC and clay/silt?
   - Describe levels of PFAS
 * Model:
-  - PFAS ~ area + TOC + clay/silt, poisson errors.
+  - PFAS ~ area + TOC + clay/silt.
+  - Test ZIP model, see picture and notes.
+* Data:
+  - Use Stepans LOQs. Go back and check raw data for values below LOD. Use LOQ/2.
+  - Verdi for PFOA i prøve R2057 BX07 fra 2019 er angitt som 0,01 men er jo under LOQ <0,05
+  
 
 
 ## Data exploration
 
-### Missing data
+### Missing data and errors
 
-**sample_id3 == R3032** had a reported value that was below LOQ and is remove until the error is investigated. Other errors found in the chemical database and corrected in the enclosed data.
+**sample_id3 == R3032** had a reported value that was below LOQ, but 
 
 ```{r}
-plot_missing(raw_data, ggtheme = survey_theme)
+plot_missing(raw_data %>% mutate(across(matches("pf"), ~if_else(.x == 0, NA, .x))), ggtheme = survey_theme)
+
+raw_data %>% select(matches("pf"))
 ```
 Missing data for some variables.
 
@@ -126,7 +210,12 @@ plot_histogram(raw_data %>% select(year,area,longitude, latitude, clay_silt_frac
 
 ```{r}
 ggmap(tar_read(stadia_map))+
-  geom_point(aes(x = longitude, y = latitude, color = area), data = raw_data,)
+  geom_point(aes(x = longitude, y = latitude, color = area), data = raw_data, size = 2)
+
+# ggsave("figures/map.pdf")
+```
+
+```{r}
 ```
 
 
@@ -255,7 +344,19 @@ Assess whether LOQ/2 is a better estimate of the true value, by looking at its d
 raw_data %>% 
   ggplot(aes(sum_9_pfas)) + geom_histogram(binwidth = 0.025)
 
+
+
+pfas_loqs <- tar_read(pfas_loqs)
+
+# pivot 
+raw_data %>% pivot_longer(matches("pf"), names_to = "pfas", values_to = "pfas_conc") %>% 
+  left_join(pfas_loqs, by = c("pfas" = "pfas")) %>% 
+  mutate(max_loq = if_else(max_loq %>% is.na(), 0, max_loq),
+                           pfas_conc = ifelse(pfas_conc <= max_loq, max_loq/2, pfas_conc)) %>% 
+  ggplot(aes(pfas_conc)) + geom_histogram(bins = 30)+facet_wrap(~pfas, scales = "free")
+
 ```
+
 
 
 
@@ -267,10 +368,41 @@ fit_lm <- lm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data)
 
 fit_lm %>% summary()
 
-fit_glm <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = gaussian(link = "log"))
 
-fit_glm_gamma <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = Gamma(link = "log"))
+raw_data %>% 
+  mutate(yhat = fitted(fit_lm),
+         res = residuals(fit_lm)) %>%
+  ggplot(aes(yhat, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs fitted")
 
+
+raw_data %>% 
+  mutate(yhat = fitted(fit_lm),
+         res = residuals(fit_lm)) %>%
+  ggplot(aes(clay_silt_fraction, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs covariate")
+
+raw_data %>% 
+  mutate(yhat = fitted(fit_lm),
+         res = residuals(fit_lm)) %>%
+  ggplot(aes(toc, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs covariate")
+
+raw_data %>% 
+  mutate(yhat = fitted(fit_lm),
+         res = residuals(fit_lm)) %>%
+  ggplot(aes(area, res)) + geom_point() + geom_smooth() +
+  stat_summary(fun = mean, geom = "point", color = "red", size = 3) +
+  labs(title = "Residuals vs covariate")
+
+raw_data %>% 
+  mutate(yhat = fitted(fit_lm),
+         res = residuals(fit_lm)) %>%
+  ggplot(aes(year, res)) + geom_point() + geom_smooth() +
+  stat_summary(fun = mean, geom = "point", color = "red", size = 3) +
+  labs(title = "Residuals vs covariate")
+
+
+ggplot(raw_data, aes(sample = sum_9_pfas)) +
+  stat_qq(size = 0.2) +
+  stat_qq_line(color = "red", size = 0.4)
 
 ```
 
@@ -279,13 +411,42 @@ fit_glm_gamma <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_da
 
 ```{r}
 library(performance)
+# 
+compare_performance(fit_lm, fit_glm, fit_glm_gamma)
 
-compare_performance(fit_lm, fit_glm, fit_glm_gamma, fit_glm_gamma_inv)
+
+fit_glm <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = gaussian(link = "log"))
+# 
+fit_glm_gamma <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = Gamma(link = "log"))
 
 
 
 
 ```
 
+# Notes 
 
+https://www.youtube.com/watch?v=ISN9SE__QOU
+
+Test dispersion, zero inflation.
+* Residuals for temporal and spatial dependency
+* Residuals vs fitted values
+* Plot residuals vs each covariate in model
+* Plot residuals vs each covariate not in model
+* Plot the fitted values vs the observed values.
+* See: https://sscc.wisc.edu/sscc/pubs/RegDiag-R/normality.html
+
+Dharma residuals are the fraction of modelled values more extreme than this value.
+
+We use ZIPs not ZAPs, as ZAPs essentialy causes us to split the dataset, and we have less possibility for an advanced model.
+
+# ZIP Gamma model
+
+```{r}
+zipgamma <- glmmTMB((sum_9_pfas+0.01) ~ area + toc + clay_silt_fraction, data = raw_data, family = Gamma(link = "log"), ziformula = ~clay_silt_fraction)
+
+summary(zipgamma)
+
+
+```
 
