@@ -1,0 +1,212 @@
+
+```{r map-year, eval = TRUE}
+
+loc_year_map <- ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = year), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 2015,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  guides(color = guide_colorbar(title = NULL))+
+  #title:
+  ggtitle("Loc vs year")
+
+year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Loc vs year")
+
+
+loc_conc_map <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 1,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  ggtitle("\u03A39PFASvs loc")
+
+loc_conc <-  raw_data %>% ggplot(aes(sum_9_pfas, latitude))+geom_point()+geom_smooth()+labs(title = "\u03A39PFAS vs loc")
+  
+(loc_year_map | loc_conc_map)  + 
+  plot_layout(guides = "collect") & 
+  theme(legend.position = 'bottom', 
+        legend.text = element_text(angle = 30)
+                                )
+
+( year_pos + loc_conc )
+
+``` 
+
+
+
+```{r map-year, eval = TRUE}
+
+loc_year_map <- ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = year), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 2015,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  guides(color = guide_colorbar(title = NULL))+
+  #title:
+  ggtitle("Loc vs year")
+
+year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Loc vs year")
+
+
+loc_conc_map <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas), alpha = 0.65, data = raw_data %>%
+    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
+  # check locations of interest
+  # geom_text_repel(
+  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
+  #     distinct(loc_address, .keep_all = TRUE),
+  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
+  # ) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_colour_gradient2(
+    low = "darkblue",
+    mid = "white",
+    high = "red3",
+    midpoint = 1,
+    space = "Lab",
+    na.value = "grey50",
+    guide = "colourbar",
+    aesthetics = "colour"
+  ) +
+  ggtitle("\u03A39PFASvs loc")
+
+loc_conc <-  raw_data %>% ggplot(aes(sum_9_pfas, latitude))+geom_point()+geom_smooth()+labs(title = "\u03A39PFAS vs loc")
+  
+(loc_year_map | loc_conc_map)  + 
+  plot_layout(guides = "collect") & 
+  theme(legend.position = 'bottom', 
+        legend.text = element_text(angle = 30)
+                                )
+
+( year_pos + loc_conc )
+```
+
+
+* Survey performed from `r min(raw_data$year)` to `r max(raw_data$year)`.
+* Different locations at different years.
+* Inorganic and organic measurements from separate cores at each location.
+    - Inorganic: TOC, clay, silt, clay/silt fraction
+    - Organic: Different PFAS.
+* Some hotspots identified.
+
+
+```{r}
+
+ggpairs(raw_data %>% dplyr::select(year,area, clay_silt_fraction, toc, sum_9_pfas) %>% na.omit(), progress = FALSE)+theme(axis.text.x = element_text(angle = 90, hjust = 1))
+
+```
+
+
+
+```{r}
+
+p1 <- raw_data %>% 
+  ggplot(aes(year, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs Year")
+
+p2 <- raw_data %>% 
+  ggplot(aes(toc, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs TOC")
+
+
+p3 <- raw_data %>% 
+  ggplot(aes(clay_silt_fraction, toc)) + geom_point() + geom_smooth()+labs(title = "TOC vs clay+silt")
+
+p4 <- raw_data %>% 
+  ggplot(aes(clay_silt_fraction, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs clay+silt")
+
+(p1+p2)/(p3+p4)
+
+```
+
+
+## Raw data integrity
+
+### Missing data and errors
+
+```{r}
+plot_missing(raw_data %>% mutate(across(matches("pf"), ~if_else(.x == 0, NA, .x))), ggtheme = survey_theme)
+
+raw_data %>% select(matches("pf"))
+```
+Missing data for some variables. PFOA, PFOS, PFNA is OK.
+
+However, other PFAS species have low fractions above LOQ. For the 
+
+### Outliers in predictor or response variables
+
+```{r cleveland-dotplot}
+raw_data %>%
+  ungroup() %>%
+  mutate(id = row_number()) %>% 
+  select(id, year, longitude, latitude, clay_silt_fraction, toc, sum_9_pfas) %>%
+  pivot_longer(cols = -id, names_to = "parameter", values_to = "value") %>%
+  ggplot(aes(value, id)) +
+  #reverse y axis:
+  scale_y_reverse() +
+  geom_point(size = 0.75) +
+  facet_wrap(~parameter, scales = "free", nrow = 3, ncol = 4)
+
+
+raw_data %>%
+  ungroup() %>%
+  mutate(id = row_number()) %>% 
+  select(id,matches("pf")) %>%
+  pivot_longer(cols = -id, names_to = "parameter", values_to = "value") %>%
+  ggplot(aes(value, id)) +
+  #reverse y axis:
+  scale_y_reverse() +
+  geom_point(size = 0.75) +
+  facet_wrap(~parameter, scales = "free", nrow = 3, ncol = 4)
+```
+
+```{r}
+plot_histogram(raw_data %>% select(year,area,longitude, latitude, clay_silt_fraction, toc, sum_9_pfas), ggtheme = survey_theme)
+```
+* Potential outliers in TOC.
+

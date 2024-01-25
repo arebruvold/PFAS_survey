@@ -3,10 +3,11 @@ execute:
   warning: false
 format:
   html:
+    embed-resources: true
     code-fold: true
 ---
 
-# PFAS survey
+# Data cleaning
 
 ```{r setup-cleaning}
 # packages
@@ -23,6 +24,15 @@ library(patchwork)
 library(ggh4x)
 library(ggthemes)
 library(glmmTMB)
+library(DHARMa)
+library(performance)
+library(MASS)
+library(scales)
+library(viridis)
+library(gtsummary)
+library(ggeffects)
+library(multcomp)
+select <- dplyr::select
 
 # set theme
 survey_theme <- theme_few()
@@ -73,19 +83,27 @@ raw_data <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
   ),
   area = as.factor(area))
 
-ss_in <- "R1582BC7"
+## for renaming sample ids to fix inconsistencies
 mareano_renamer <- function(ss_in) {
+  
+  sub_renamer <- function(ss_in){
+  # check input
+  stopifnot("requires single character string input." = length(ss_in) == 1 && is.character(ss_in))
+
+  # for all strings remove spaces and replace BC with BX
   ss_out <- ss_in %>%
     str_replace_all("\\s", "") %>%
     str_replace_all("BC", "BX")
+  # return if string do not contain MC or BX, as errors only with BX/MC
   if (str_detect(ss_out, "MC|BX", negate = TRUE)) {
-    return(ss_out)
-  }
-
-
+    return(ss_out)}
+  
+  # part of name including BX/MC
   ss_prefix <- str_extract(ss_out, ".+[BXMC]+")
+  # suffix-numbers with incoherent lengths
   ss_suffix <- str_extract(ss_out, "[0-9]+$")
 
+  # change lengths
   if (str_length(ss_suffix) == 3) {
     return(ss_out)
   } else if (str_length(ss_suffix) == 2) {
@@ -96,10 +114,13 @@ mareano_renamer <- function(ss_in) {
     # break with error message "suffix string not of length 1, 2 or 3":
     stop("suffix string not of length 1, 2 or 3")
   }
+  }
+  
+  ss_out <-  map_chr(ss_in, sub_renamer)
+  return(ss_out)
 }
-hei <- raw_data %>% select(sample_id3) %>% mutate(sample_id_new = map_chr(sample_id3, mareano_renamer)) %>% filter(sample_id_new != sample_id3)
 
-# importing curated LOQs
+# import curated LOQs
 loqs_raw <- read_excel("data/LOQs.xlsx") %>%
   clean_names() %>%
   select(-enhet) %>%
@@ -122,331 +143,352 @@ loqs_samples <- loqs_raw %>%
     names_to = "analysis_year",
     values_to = "sample_id"
   ) %>%
-  drop_na()
+  drop_na() %>% 
+  mutate(
+    sample_id = mareano_renamer(sample_id)
+  )
 
 loqs <- left_join(
   loqs_years, loqs_samples,
   by = c("analysis_year")
-) %>%
+)
+
+# reshape to merge with loqs
+raw_data_long <- raw_data %>%
+  pivot_longer(
+    cols = pfos:sum_9_pfas, names_to = "pfas", values_to = "pfas_value"
+  ) %>%
+  mutate(sample_id3 = mareano_renamer(sample_id3))
+
+# merge data, assign values below LOQ
+pfas_data <- left_join(raw_data_long, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
+  select(-analysis_year) %>%
   mutate(
-    sample_id = str_replace_all(sample_id, "BC", "BX"),
-    # d/dd to ddd
-    sample_id = if_else(str_detect(sample_id, "MC\\d{3}$|BX\\d{3}$"), sample_id,
-      sample_id %>% str_replace("\\d{3}$", ~
-                                paste()
-                                )
+    pfas_value = case_when(
+      pfas_value < loq ~ loq / 2,
+      TRUE ~ pfas_value
     )
   ) %>%
-  raw_data_long() <- raw_data %>%
-  pivot_longer(
-    cols = pfos:sum_9_pfas, names_to = "pfas", values_to = "pvas_value"
-  ) %>%
+    mutate(
+    above_loq = case_when(
+      pfas_value < loq ~ FALSE,
+      TRUE ~ TRUE
+    )
+    ) %>% 
+  select(sample_id3, year, area, longitude, latitude, clay_silt_fraction, toc, pfas, pfas_value, loq, above_loq) %>%
+  group_by(sample_id3) %>%
   mutate(
-    sample_id3 = str_replace_all(sample_id3, "\\s", ""),
-    sample_id3 = str_replace_all(sample_id3, "BC", "BX")
+    pfas_value = if_else(
+      pfas == "sum_9_pfas",
+      sum(pfas_value[pfas != "sum_9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
   ) %>%
-  distinct(sample_id3) %>%
-  rename(sample_id = sample_id3)
+  ungroup()
 
-library(arsenal)
+pfas_wide = pivot_wider(pfas_data %>% select(-c(loq, above_loq)), names_from = pfas, values_from = pfas_value)
 
-cmp <- comparedf(loqs, raw_data_long, by = "sample_id")
+# set loq to highest for each PFAS compound
+pfas_data_eq <- pfas_data %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq)) %>%
+  mutate(
+    pfas_value = case_when(
+      pfas_value < max_loq ~ max_loq / 2,
+      TRUE ~ pfas_value
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(
+    pfas_value = if_else(
+      pfas == "sum_9_pfas",
+      sum(pfas_value[pfas != "sum_9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
+  ) %>%
+  select(-max_loq)
 
-cmp
-summary(cmp)
-
-cmp %>% diffs(what = "observations") %>% View()
+pfas_data_eq_wide <- pivot_wider(pfas_data_eq %>% select(-c(loq, above_loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
 
 ```
 
-## Todo
+```{r map}
+#| column: screen
+#| out-width: 100%
+
+map_area_conc <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas, fill = sum_9_pfas, shape = area), data = pfas_data_eq_wide, position = position_dodge(width = 10), size = 2, alpha = 0.7) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_color_viridis(option = "magma") +
+  scale_fill_viridis(option = "magma") +
+  scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  #change legend label to Area and \u03A39PFAS:
+  labs(color = "\u03A39PFAS", shape = "Area")+
+  guides(fill = FALSE)
+  
+
+map_area_conc
+
+```
+
+# Todo
+* Add missing longitudes
 * Hypotheses:
   - Is there a difference in PFAS levels between the different areas, corrected for TOC and clay/silt?
   - Describe levels of PFAS
-* Model:
-  - PFAS ~ area + TOC + clay/silt.
-  - Test ZIP model, see picture and notes.
-* Data:
-  - Use Stepans LOQs. Go back and check raw data for values below LOD. Use LOQ/2.
-  - Verdi for PFOA i prøve R2057 BX07 fra 2019 er angitt som 0,01 men er jo under LOQ <0,05
+* Can:
+    - Partial residuals on location map, correcting for silt+clay?¨
+    - Make tables with PFAS overviews
+    - Regression model for each PFAS
+    - Separate models makes sense only with the top 3 pfas(?)
+
+
+```{r}
+pfas_data %>% group_by(pfas) %>% 
+  summarise(
+    n = sum(above_loq),
+    n_samples = n_distinct(sample_id3)
+  ) %>% 
+  mutate(
+    p = n / n_samples
+  ) %>% arrange(p) %>% 
+  gt() %>% 
+  fmt_percent(columns = vars(p)) %>% 
+  # name gt table:
+  tab_header(
+    title = md("Number of samples above LOQ"),
+    subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
+  ) %>% 
+  cols_label(
+    pfas = md("**PFAS**"),
+    n = md("**# samples > LOQ**"),
+    n_samples = md("**# samples**"),
+    p = md("**Proportion > LOQ**")
+  )
+```
+
+Should set LOQ to the highest in the cases were most values are below LOQ. Otherwise LOQ is a confounder. For regression model, we then use all PFAS for the compounds combined, but can report on original LOQs.
+
+
+
+# Model selection
+
+Gaussian model poor fit and high AIC. Tweedie did not show a substantial improvement over a gamma model and had higher AIC, thus the simpler gamma model was chosen.
+
+## Gaussian linear model (NOT USED)
+
+```{r fit-gaus}
+
+
+fit_lm <- glmmTMB(sum_9_pfas ~ area + clay_silt_fraction, data = pfas_data_eq_wide %>% ungroup(), family = gaussian(link = "log"))
+
+tbl_regression(fit_lm, exponentiate = TRUE, estimate_fun = purrr::partial(style_ratio, digits = 3),
+         pvalue_fun = purrr::partial(style_sigfig, digits = 3)) %>% as_gt() %>%
+  tab_header(
+    title = md("Gaussian model with log link"),
+    subtitle = md("Model for sum of 9 PFAS, with area and fraction of clay + silt as covariates."))
+```
+
+
+```{r sim-resid-gaus}
+sim_residuals <- simulateResiduals(fittedModel = fit_lm, n = 1000)
+
+testdisp <- testDispersion(sim_residuals, plot = FALSE)
+```
+
+```{r validation-gaus}
+#| layout-ncol: 2
+#| layout-nrow: 5
+plotResiduals(sim_residuals, quantreg = TRUE, smoothScatter = FALSE,)
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$toc, xlab = "TOC")
+plotQQunif(sim_residuals, testUniformity = TRUE, testOutliers = TRUE, testDispersion = TRUE)
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$year, xlab = "Year",)
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$latitude, xlab = "Latitude")
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$longitude, xlab = "Longitude")
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$area, xlab = "Area")
+
+
+
+pred <- ggpredict(fit_lm, terms = c("clay_silt_fraction [1:100]", "area"))
+
+pred_plot <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth() +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(aes(x = clay_silt_fraction, y = sum_9_pfas), data = pfas_data_eq_wide %>% rename(group = area)) +
+  facet_wrap(~group)
+# pred_plot
+
+simulated <- simulate(fit_lm, nsim = 100, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot + geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = "pink3")
+
+```
+
+We have overdispersion, heteroskedasticity and observed values fall outside simulated value for S and SV.
+
+
+## Gamma model (FINAL)
+
+Stepwise selection shows silt_clay to be only significant. Area included to test hypothesis. Dharma residuals are the fraction of modeled values more extreme than this value.
+
+```{r gamma-fit}
+
+fit_gamma <- glmmTMB((sum_9_pfas) ~ area + clay_silt_fraction, data = pfas_data_eq_wide, family = Gamma(link = "log"))
+
+tbl_regression(fit_gamma,
+  exponentiate = TRUE, estimate_fun = purrr::partial(style_ratio, digits = 3),
+  pvalue_fun = purrr::partial(style_sigfig, digits = 3)
+) %>%
+  as_gt() %>%
+  tab_header(
+    title = md("Gamma model with log link"),
+    subtitle = md("Model for sum of 9 PFAS, with area and faction of clay + silt as covariates.")
+  )
+
+
+```
+
+```{r dispersion-test-gamma}
+sim_residuals <- simulateResiduals(fittedModel = fit_gamma, n = 1000)
+testDispersion(sim_residuals)
+```
+
+
+```{r gamma-val}
+#| layout-ncol: 2
+#| layout-nrow: 5
+
+
+
+plotResiduals(sim_residuals, quantreg = TRUE, smoothScatter = FALSE,)
+
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$toc, xlab = "TOC")
+
+plotQQunif(sim_residuals, testUniformity = TRUE, 
+           testOutliers = TRUE, testDispersion = TRUE)
+
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$year, xlab = "Year",)
+
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$latitude, xlab = "Latitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$longitude, xlab = "Longitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq_wide$area, xlab = "Area")
+```
+
+
+```{r}
+#| label: fig-gamma-obs-sim
+#| fig-cap: "Black dots shows observed values, fitted a Gamma GLM with log link. Ribbons shows the 95% CI of the mean predicted value. Red dots shows simulated values from 100 simulations based on observed values for the covariates."
+# pfas_data_eq_wide %>%
+#   mutate(yhat = fitted(fit_gamma),
+#          res = residuals(fit_gamma),
+#         ) %>%
+#   ggplot(aes(clay_silt_fraction, yhat, color = area)) + geom_point() + geom_smooth()+ geom_smooth(method = "lm",se = TRUE)+
+#   geom_point(aes(clay_silt_fraction, sum_9_pfas))+
+#   labs(title = "Fitted vs observed values")+
+#   xlab("Clay + silt fraction")+
+#   ylab("Sum of 9 PFAS")
+
+# predict values for CIs
+pred <- ggpredict(fit_gamma, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_gamma, nsim = 100, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = sum_9_pfas), data = pfas_data_eq_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("\u03A39PFAS")
+pred_plot
+
+```
+
+No problems except for some spatial dependency. Observed values fall within the simulated values. 
+
+```{r}
+library(broom)
+glht(fit_gamma, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% gt() %>% tab_header(title = "Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+```
+
+No substantial difference between the areas, SV is higher than NH, driven primarily by three high values.
+
+```{r}
+# using same LOQs
+pfas_prop <- pfas_data_eq %>%
+  # for each area, calculate the proportion of each pfas:
+  group_by(area, pfas) %>% 
+  summarise(
+    pfas_sum = sum(pfas_value, na.rm = TRUE),
+  ) %>% 
+  group_by(area) %>% 
+  mutate(
+    pfas_prop = pfas_sum / sum(pfas_sum[pfas != "sum_9_pfas"], na.rm = TRUE)
+  ) %>% 
+  filter(pfas != "sum_9_pfas")
+
+ggplot(pfas_prop, aes(fill=pfas, y=pfas_prop, x=area)) + 
+    geom_bar(position="stack", stat="identity")+
+  scale_fill_brewer(palette="Set3")+
+  xlab("Area")+ylab("Propotion")+
+  #legend title PFAS:
+  labs(fill = "PFAS")
+  
+```
+
+
+# Tables
+
+```{r}
+pfas_data_eq %>% group_by(pfas, area) %>%
+  #mean, sd for each area
+  summarise(
+    mean = mean(pfas_value, na.rm = TRUE),
+    sd = sd(pfas_value, na.rm = TRUE),
+    n = n()
+  ) %>% 
+  gt(
+    rowname_col = "pfas",
+    groupname_col = "area"
+  ) %>% tab_header(title = "Summary of PFAS values by area") %>% fmt_number(columns = 2:4,decimals = 2)
   
 
 
-## Data exploration
-
-### Missing data and errors
-
-**sample_id3 == R3032** had a reported value that was below LOQ, but 
-
-```{r}
-plot_missing(raw_data %>% mutate(across(matches("pf"), ~if_else(.x == 0, NA, .x))), ggtheme = survey_theme)
-
-raw_data %>% select(matches("pf"))
-```
-Missing data for some variables.
-
-### Outliers in predictor or response variables
-
-```{r cleveland-dotplot}
-raw_data %>%
-  ungroup() %>%
-  mutate(id = row_number()) %>% 
-  select(id, year, longitude, latitude, clay_silt_fraction, toc, sum_9_pfas) %>%
-  pivot_longer(cols = -id, names_to = "parameter", values_to = "value") %>%
-  ggplot(aes(value, id)) +
-  #reverse y axis:
-  scale_y_reverse() +
-  geom_point(size = 0.75) +
-  facet_wrap(~parameter, scales = "free", nrow = 3, ncol = 4)
-```
-
-```{r}
-plot_histogram(raw_data %>% select(year,area,longitude, latitude, clay_silt_fraction, toc, sum_9_pfas), ggtheme = survey_theme)
-```
-* Potential outliers in TOC.
-
-
-### Dependencies
-
-```{r}
-ggmap(tar_read(stadia_map))+
-  geom_point(aes(x = longitude, y = latitude, color = area), data = raw_data, size = 2)
-
-# ggsave("figures/map.pdf")
-```
-
-```{r}
-```
-
-
-
-```{r map-year, eval = TRUE}
-
-loc_year_map <- ggmap(tar_read(stadia_map)) +
-  geom_point(aes(x = longitude, y = latitude, color = year), alpha = 0.65, data = raw_data %>%
-    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
-  # check locations of interest
-  # geom_text_repel(
-  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
-  #     distinct(loc_address, .keep_all = TRUE),
-  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
-  # ) +
-  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
-  scale_colour_gradient2(
-    low = "darkblue",
-    mid = "white",
-    high = "red3",
-    midpoint = 2015,
-    space = "Lab",
-    na.value = "grey50",
-    guide = "colourbar",
-    aesthetics = "colour"
-  ) +
-  guides(color = guide_colorbar(title = NULL))+
-  #title:
-  ggtitle("Loc vs year")
-
-year_pos <- raw_data %>% ggplot(aes(year, latitude))+geom_point()+geom_smooth()+labs(title = "Loc vs year")
-
-
-loc_conc_map <-
-  ggmap(tar_read(stadia_map)) +
-  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas), alpha = 0.65, data = raw_data %>%
-    mutate(across(everything(), as.numeric)), position = position_dodge(width = 0.90), size = 2) +
-  # check locations of interest
-  # geom_text_repel(
-  #   data = quantification_classified %>% filter(isotope == "Ag" & (mass_conc_mean > mass_conc_LOD | particle_conc_mean > particle_conc_LOD)) %>%
-  #     distinct(loc_address, .keep_all = TRUE),
-  #   aes(x = longitude, y = latitude, label = loc_address), color = "red", size = 2
-  # ) +
-  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
-  scale_colour_gradient2(
-    low = "darkblue",
-    mid = "white",
-    high = "red3",
-    midpoint = 1,
-    space = "Lab",
-    na.value = "grey50",
-    guide = "colourbar",
-    aesthetics = "colour"
-  ) +
-  ggtitle("\u03A39PFASvs loc")
-
-loc_conc <-  raw_data %>% ggplot(aes(sum_9_pfas, latitude))+geom_point()+geom_smooth()+labs(title = "\u03A39PFAS vs loc")
-  
-(loc_year_map | loc_conc_map)  + 
-  plot_layout(guides = "collect") & 
-  theme(legend.position = 'bottom', 
-        legend.text = element_text(angle = 30)
-                                )
-
-( year_pos + loc_conc )
-
-```
-
-
-* Survey performed from `r min(raw_data$year)` to `r max(raw_data$year)`.
-* Different locations at different years.
-* Inorganic and organic measurements from separate cores at each location.
-    - Inorganic: TOC, clay, silt, clay/silt fraction
-    - Organic: Different PFAS.
-* Some hotspots identified.
-
-
-```{r}
-
-ggpairs(raw_data %>% dplyr::select(year,area, clay_silt_fraction, toc, sum_9_pfas) %>% na.omit(), progress = FALSE)+theme(axis.text.x = element_text(angle = 90, hjust = 1))
-
-```
-
-
-```{r}
-
-p1 <- raw_data %>% 
-  ggplot(aes(year, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs Year")
-
-p2 <- raw_data %>% 
-  ggplot(aes(toc, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs TOC")
-
-
-p3 <- raw_data %>% 
-  ggplot(aes(clay_silt_fraction, toc)) + geom_point() + geom_smooth()+labs(title = "TOC vs clay+silt")
-
-p4 <- raw_data %>% 
-  ggplot(aes(clay_silt_fraction, sum_9_pfas)) + geom_point() + geom_smooth()+labs(title = "PFAS vs clay+silt")
-
-(p1+p2)/(p3+p4)
-
-```
-
-
-## Modeling
-
-* Gamma is a candidate
-* As is "normal" Gaussian.
-* Potential issues with zero inflation:
-  - LOQ/2 if below LOQ
-  - zero-inflated model
-* Overdispersion using lm
-  - Using glm with Gamma distribution
-  - logtransforming response variable
-
-
-https://stats.stackexchange.com/questions/67547/when-to-use-gamma-glms
-
-
-### Check LOQ/2
-
-Assess whether LOQ/2 is a better estimate of the true value, by looking at its distribution.
-
-```{r}
-#| fig-cap: "Polar axis plot"
-raw_data %>% 
-  ggplot(aes(sum_9_pfas)) + geom_histogram(binwidth = 0.025)
-
-
-
-pfas_loqs <- tar_read(pfas_loqs)
-
-# pivot 
-raw_data %>% pivot_longer(matches("pf"), names_to = "pfas", values_to = "pfas_conc") %>% 
-  left_join(pfas_loqs, by = c("pfas" = "pfas")) %>% 
-  mutate(max_loq = if_else(max_loq %>% is.na(), 0, max_loq),
-                           pfas_conc = ifelse(pfas_conc <= max_loq, max_loq/2, pfas_conc)) %>% 
-  ggplot(aes(pfas_conc)) + geom_histogram(bins = 30)+facet_wrap(~pfas, scales = "free")
-
+pfas_data_eq_wide %>% group_by(area) %>% 
+  #mean, sd for each area for each of sum_9_pfas, toc, clay_silt_fraction:
+  summarise(
+    sum_9_pfas = mean(sum_9_pfas, na.rm = TRUE),
+    toc = mean(toc, na.rm = TRUE),
+    clay_silt_fraction = mean(clay_silt_fraction, na.rm = TRUE),
+    n = n()
+  ) %>% gt() %>% 
+  fmt_number(columns = 2:4,decimals = 1) %>% 
+  tab_spanner(label = "Mean", columns = 2:4) %>% 
+  tab_header(title = "Summary of covariates by area") %>% 
+  cols_label(
+    area = md("**Area**"),
+    sum_9_pfas = md("**\u03A39PFAS**"),
+    toc = md("**TOC**"),
+    clay_silt_fraction = md("**Clay + silt %**")
+  )
 ```
 
 
 
 
-# Gaussian linear model
-
-```{r}
-
-fit_lm <- lm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data)
-
-fit_lm %>% summary()
-
-
-raw_data %>% 
-  mutate(yhat = fitted(fit_lm),
-         res = residuals(fit_lm)) %>%
-  ggplot(aes(yhat, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs fitted")
-
-
-raw_data %>% 
-  mutate(yhat = fitted(fit_lm),
-         res = residuals(fit_lm)) %>%
-  ggplot(aes(clay_silt_fraction, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs covariate")
-
-raw_data %>% 
-  mutate(yhat = fitted(fit_lm),
-         res = residuals(fit_lm)) %>%
-  ggplot(aes(toc, res)) + geom_point() + geom_smooth() + labs(title = "Residuals vs covariate")
-
-raw_data %>% 
-  mutate(yhat = fitted(fit_lm),
-         res = residuals(fit_lm)) %>%
-  ggplot(aes(area, res)) + geom_point() + geom_smooth() +
-  stat_summary(fun = mean, geom = "point", color = "red", size = 3) +
-  labs(title = "Residuals vs covariate")
-
-raw_data %>% 
-  mutate(yhat = fitted(fit_lm),
-         res = residuals(fit_lm)) %>%
-  ggplot(aes(year, res)) + geom_point() + geom_smooth() +
-  stat_summary(fun = mean, geom = "point", color = "red", size = 3) +
-  labs(title = "Residuals vs covariate")
-
-
-ggplot(raw_data, aes(sample = sum_9_pfas)) +
-  stat_qq(size = 0.2) +
-  stat_qq_line(color = "red", size = 0.4)
-
-```
-
-
-
-
-```{r}
-library(performance)
-# 
-compare_performance(fit_lm, fit_glm, fit_glm_gamma)
-
-
-fit_glm <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = gaussian(link = "log"))
-# 
-fit_glm_gamma <- glm(sum_9_pfas ~ area + toc + clay_silt_fraction, data = raw_data %>% mutate(sum_9_pfas = sum_9_pfas + 0.001), family = Gamma(link = "log"))
-
-
-
-
-```
-
-# Notes 
-
-https://www.youtube.com/watch?v=ISN9SE__QOU
-
-Test dispersion, zero inflation.
-* Residuals for temporal and spatial dependency
-* Residuals vs fitted values
-* Plot residuals vs each covariate in model
-* Plot residuals vs each covariate not in model
-* Plot the fitted values vs the observed values.
-* See: https://sscc.wisc.edu/sscc/pubs/RegDiag-R/normality.html
-
-Dharma residuals are the fraction of modelled values more extreme than this value.
-
-We use ZIPs not ZAPs, as ZAPs essentialy causes us to split the dataset, and we have less possibility for an advanced model.
-
-# ZIP Gamma model
-
-```{r}
-zipgamma <- glmmTMB((sum_9_pfas+0.01) ~ area + toc + clay_silt_fraction, data = raw_data, family = Gamma(link = "log"), ziformula = ~clay_silt_fraction)
-
-summary(zipgamma)
-
-
-```
 
