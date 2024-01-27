@@ -234,16 +234,19 @@ map_area_conc
 ```
 
 # Todo
-* Add missing longitudes
-* Hypotheses:
-  - Is there a difference in PFAS levels between the different areas, corrected for TOC and clay/silt?
-  - Describe levels of PFAS
-* Can:
-    - Partial residuals on location map, correcting for silt+clay?¨
-    - Make tables with PFAS overviews
-    - Regression model for each PFAS
-    - Separate models makes sense only with the top 3 pfas(?)
 
+-   Describe strength and significant of covariates clay/silt and TOC. And relation between these.
+-   Make partial residual plot correcting for CS.
+-   Vise clay silt per area. Om analyse gjentatt med to områder (SV, S) tatt ut - dette endrer ikke forholdet til clay/silt.
+-   Add missing longitudes
+-   Hypotheses:
+    -   Is there a difference in PFAS levels between the different areas, corrected for TOC and clay/silt?
+    -   Describe levels of PFAS
+-   Can:
+    -   Partial residuals on location map, correcting for silt+clay?¨
+    -   Make tables with PFAS overviews
+    -   Regression model for each PFAS
+    -   Separate models makes sense only with the top 3 pfas(?)
 
 ```{r}
 pfas_data %>% group_by(pfas) %>% 
@@ -271,13 +274,15 @@ pfas_data %>% group_by(pfas) %>%
 
 Should set LOQ to the highest in the cases were most values are below LOQ. Otherwise LOQ is a confounder. For regression model, we then use all PFAS for the compounds combined, but can report on original LOQs.
 
-
-
 # Model selection
 
 Gaussian model poor fit and high AIC. Tweedie did not show a substantial improvement over a gamma model and had higher AIC, thus the simpler gamma model was chosen.
 
 ## Gaussian linear model (NOT USED)
+
+<details>
+
+<summary>Details</summary>
 
 ```{r fit-gaus}
 
@@ -290,7 +295,6 @@ tbl_regression(fit_lm, exponentiate = TRUE, estimate_fun = purrr::partial(style_
     title = md("Gaussian model with log link"),
     subtitle = md("Model for sum of 9 PFAS, with area and fraction of clay + silt as covariates."))
 ```
-
 
 ```{r sim-resid-gaus}
 sim_residuals <- simulateResiduals(fittedModel = fit_lm, n = 1000)
@@ -331,6 +335,7 @@ pred_plot + geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), al
 
 We have overdispersion, heteroskedasticity and observed values fall outside simulated value for S and SV.
 
+</details>
 
 ## Gamma model (FINAL)
 
@@ -351,13 +356,13 @@ tbl_regression(fit_gamma,
   )
 
 
+
 ```
 
 ```{r dispersion-test-gamma}
 sim_residuals <- simulateResiduals(fittedModel = fit_gamma, n = 1000)
 testDispersion(sim_residuals)
 ```
-
 
 ```{r gamma-val}
 #| layout-ncol: 2
@@ -380,7 +385,6 @@ plotResiduals(sim_residuals, form = pfas_data_eq_wide$longitude, xlab = "Longitu
 
 plotResiduals(sim_residuals, form = pfas_data_eq_wide$area, xlab = "Area")
 ```
-
 
 ```{r}
 #| label: fig-gamma-obs-sim
@@ -415,7 +419,7 @@ pred_plot
 
 ```
 
-No problems except for some spatial dependency. Observed values fall within the simulated values. 
+No problems except for some spatial dependency. Observed values fall within the simulated values.
 
 ```{r}
 library(broom)
@@ -426,7 +430,7 @@ glht(fit_gamma, linfct = mcp(area = "Tukey")) %>%
 
 ```
 
-No substantial difference between the areas, SV is higher than NH, driven primarily by three high values.
+No substantial difference between the areas, SV is higher than NH, that could be driven primarily by three high values.
 
 ```{r}
 # using same LOQs
@@ -450,7 +454,6 @@ ggplot(pfas_prop, aes(fill=pfas, y=pfas_prop, x=area)) +
   labs(fill = "PFAS")
   
 ```
-
 
 # Tables
 
@@ -487,8 +490,3 @@ pfas_data_eq_wide %>% group_by(area) %>%
     clay_silt_fraction = md("**Clay + silt %**")
   )
 ```
-
-
-
-
-
