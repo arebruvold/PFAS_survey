@@ -337,7 +337,7 @@ We have overdispersion, heteroskedasticity and observed values fall outside simu
 
 </details>
 
-## Gamma model (FINAL)
+## Gamma LOQ/2-model (FINAL)
 
 Stepwise selection shows silt_clay to be only significant. Area included to test hypothesis. Dharma residuals are the fraction of modeled values more extreme than this value.
 
@@ -455,22 +455,160 @@ ggplot(pfas_prop, aes(fill=pfas, y=pfas_prop, x=area)) +
   
 ```
 
+## Tweedie LOQ-0-model
+
+```{r tweedie-fit}
+pfas_data_eq0 <- pfas_data %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq)) %>%
+  mutate(
+    pfas_value = case_when(
+      pfas_value < max_loq ~ 0,
+      TRUE ~ pfas_value
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(
+    pfas_value = if_else(
+      pfas == "sum_9_pfas",
+      sum(pfas_value[pfas != "sum_9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
+  ) %>%
+  select(-max_loq)
+
+pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq, above_loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
+
+
+fit_tweedie_0 <- glmmTMB((sum_9_pfas) ~ area + clay_silt_fraction, data = pfas_data_eq0_wide, family = tweedie(link = "log"))
+
+# tbl_regression(fit_tweedie_0,
+#   exponentiate = TRUE, estimate_fun = purrr::partial(style_ratio, digits = 3),
+#   pvalue_fun = purrr::partial(style_sigfig, digits = 3)
+# ) %>%
+#   as_gt() %>%
+#   tab_header(
+#     title = md("Tweedie model with log link"),
+#     subtitle = md("Model for sum of 9 PFAS, with area and faction of clay + silt as covariates. Below LOQ set to 0.")
+#   )
+
+summary(fit_tweedie_0)
+
+```
+
+
+```{r dispersion-test-tweedie}
+sim_residuals <- simulateResiduals(fittedModel = fit_tweedie_0, n = 1000)
+testDispersion(sim_residuals)
+```
+
+```{r tweedie-val}
+#| layout-ncol: 2
+#| layout-nrow: 5
+
+
+
+plotResiduals(sim_residuals, quantreg = TRUE, smoothScatter = FALSE,)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$toc, xlab = "TOC")
+
+plotQQunif(sim_residuals, testUniformity = TRUE, 
+           testOutliers = TRUE, testDispersion = TRUE)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$year, xlab = "Year",)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$latitude, xlab = "Latitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$longitude, xlab = "Longitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$area, xlab = "Area")
+```
+
+```{r}
+#| label: fig-tweedie-obs-sim
+#| fig-cap: "Black dots shows observed values, fitted a Tweedie GLM with log link, values below LOQ set to 0. Ribbons shows the 95% CI of the mean predicted value. Red dots shows simulated values from 100 simulations based on observed values for the covariates."
+
+
+# predict values for CIs
+pred <- ggpredict(fit_tweedie_0, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_0, nsim = 100, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = sum_9_pfas), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("\u03A39PFAS")
+pred_plot
+
+```
+
+
+```{r}
+library(broom)
+glht(fit_tweedie_0, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% gt() %>% tab_header(title = "Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+```
+
+
+
+
 # Tables
 
 ```{r}
-pfas_data_eq %>% group_by(pfas, area) %>%
-  #mean, sd for each area
-  summarise(
-    mean = mean(pfas_value, na.rm = TRUE),
-    sd = sd(pfas_value, na.rm = TRUE),
-    n = n()
-  ) %>% 
-  gt(
-    rowname_col = "pfas",
-    groupname_col = "area"
-  ) %>% tab_header(title = "Summary of PFAS values by area") %>% fmt_number(columns = 2:4,decimals = 2)
+# pfas_data_eq %>% group_by(pfas, area) %>%
+#   #mean, sd for each area
+#   summarise(
+#     mean = mean(pfas_value, na.rm = TRUE),
+#     sd = sd(pfas_value, na.rm = TRUE),
+#     n = n()
+#   ) %>% 
+#   gt(
+#     rowname_col = "pfas",
+#     groupname_col = "area"
+#   ) %>% tab_header(title = "Summary of PFAS values by area, <LOQ = LOQ/2") %>% fmt_number(columns = 2:4,decimals = 2)
+# 
+# pfas_data_eq0 %>% group_by(pfas, area) %>%
+#   #mean, sd for each area
+#   summarise(
+#     mean = mean(pfas_value, na.rm = TRUE),
+#     sd = sd(pfas_value, na.rm = TRUE),
+#     n = n()
+#   ) %>% 
+#   gt(
+#     rowname_col = "pfas",
+#     groupname_col = "area"
+#   ) %>% tab_header(title = "Summary of PFAS values by area, <LOQ = 0") %>% fmt_number(columns = 2:4,decimals = 2)
   
 
+
+pfas_data_eq0_wide %>% group_by(area) %>% 
+  #mean, sd for each area for each of sum_9_pfas, toc, clay_silt_fraction:
+  summarise(
+    sum_9_pfas = mean(sum_9_pfas, na.rm = TRUE),
+    toc = mean(toc, na.rm = TRUE),
+    clay_silt_fraction = mean(clay_silt_fraction, na.rm = TRUE),
+    n = n()
+  ) %>% gt() %>% 
+  fmt_number(columns = 2:4,decimals = 1) %>% 
+  tab_spanner(label = "Mean", columns = 2:4) %>% 
+  tab_header(title = "Summary of covariates by area, <LOQ = 0") %>% 
+  cols_label(
+    area = md("**Area**"),
+    sum_9_pfas = md("**\u03A39PFAS**"),
+    toc = md("**TOC**"),
+    clay_silt_fraction = md("**Clay + silt %**")
+  )
 
 pfas_data_eq_wide %>% group_by(area) %>% 
   #mean, sd for each area for each of sum_9_pfas, toc, clay_silt_fraction:
@@ -482,7 +620,7 @@ pfas_data_eq_wide %>% group_by(area) %>%
   ) %>% gt() %>% 
   fmt_number(columns = 2:4,decimals = 1) %>% 
   tab_spanner(label = "Mean", columns = 2:4) %>% 
-  tab_header(title = "Summary of covariates by area") %>% 
+  tab_header(title = "Summary of covariates by area, <LOQ = LOQ/2") %>% 
   cols_label(
     area = md("**Area**"),
     sum_9_pfas = md("**\u03A39PFAS**"),
