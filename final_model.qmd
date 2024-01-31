@@ -1,0 +1,649 @@
+---
+execute:
+  warning: false
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+---
+
+# Data cleaning
+
+```{r setup-cleaning}
+# packages
+library(tidyverse)
+library(readxl)
+library(ggmap)
+library(janitor)
+library(ggrepel)
+library(GGally)
+library(targets)
+library(gt)
+library(DataExplorer)
+library(patchwork)
+library(ggh4x)
+library(ggthemes)
+library(glmmTMB)
+library(DHARMa)
+library(performance)
+library(MASS)
+library(scales)
+library(viridis)
+library(gtsummary)
+library(ggeffects)
+library(multcomp)
+library(broom)
+select <- dplyr::select
+
+# set theme
+survey_theme <- theme_few()
+theme_set(survey_theme)
+
+## for renaming sample ids to fix inconsistencies
+mareano_renamer <- function(ss_in) {
+  
+  sub_renamer <- function(ss_in){
+  # check input
+  stopifnot("requires single character string input." = length(ss_in) == 1 && is.character(ss_in))
+
+  # for all strings remove spaces and replace BC with BX
+  ss_out <- ss_in %>%
+    str_replace_all("\\s", "") %>%
+    str_replace_all("BC", "BX")
+  # return if string do not contain MC or BX, as errors only with BX/MC
+  if (str_detect(ss_out, "MC|BX", negate = TRUE)) {
+    return(ss_out)}
+  
+  # part of name including BX/MC
+  ss_prefix <- str_extract(ss_out, ".+[BXMC]+")
+  # suffix-numbers with incoherent lengths
+  ss_suffix <- str_extract(ss_out, "[0-9]+$")
+
+  # change lengths
+  if (str_length(ss_suffix) == 3) {
+    return(ss_out)
+  } else if (str_length(ss_suffix) == 2) {
+    return(paste0(ss_prefix, "0", ss_suffix))
+  } else if (str_length(ss_suffix) == 1) {
+    return(paste0(ss_prefix, "00", ss_suffix))
+  } else {
+    # break with error message "suffix string not of length 1, 2 or 3":
+    stop("suffix string not of length 1, 2 or 3")
+  }
+  }
+  
+  ss_out <-  map_chr(ss_in, sub_renamer)
+  return(ss_out)
+}
+
+
+# to fix shifted column names
+newnames <- (read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>% clean_names())[1, 16:29] %>% as_vector()
+
+# appending correct column names
+dataset <- read_excel("data/Hele datasettet v2.xlsx", skip = 178) %>%
+  clean_names() %>%
+  rename_with(.cols = x16:x29, ~newnames) %>%
+  clean_names() %>%
+  slice(-1) %>% 
+  select(
+    sample_id = sample,
+    year = cruise_3,
+    number = cruise_4,
+    from_cm_o = sample_interval_top_bottom_5,
+    to_cm_o = x6,
+    longitude = dde,
+    latitude = ddn,
+    depth_m = mbsl,
+    sample_id2 = x1096mc002,
+    sample_id3 = sample_2,
+    from_cm_i = sample_interval_top_bottom_12,
+    to_cm_i = x13,
+    clay_fraction,
+    silt_fraction,
+    clay_silt_fraction = clay_silt_percent,
+    toc = toc_percent,
+    pfos:pf_tri_a,
+    -pf_dc_s,
+    sum_9_pfas = sum_10_pfas,
+  ) %>%
+  filter(
+    !is.na(year)
+  ) %>%
+  mutate(across(!matches("sample"), as.numeric)) %>% 
+    #assign areas:
+  mutate(area = case_when(
+    row_number() %in% c(1:18) ~ "SV",
+    row_number() %in% c(19:45) ~ "BH mid",
+    row_number() %in% c(46:66) ~ "BH sør",
+    row_number() %in% c(67:89) ~ "NH",
+    row_number() %in% c(90:95) ~ "S",
+    TRUE ~ "Other"
+  ),
+  area = as.factor(area)) %>% 
+  pivot_longer(
+    cols = pfos:sum_9_pfas, names_to = "pfas", values_to = "pfas_value"
+  ) %>%
+  mutate(sample_id3 = mareano_renamer(sample_id3))
+
+
+# import curated LOQs
+loqs_raw <- read_excel("data/LOQs.xlsx") %>%
+  clean_names() %>%
+  select(-enhet) %>%
+  rename(pfas = forbindelse)
+
+loqs_years <- loqs_raw %>%
+  filter(!(is.na(pfas))) %>%
+  mutate(across(-pfas, ~ str_replace_all(.x, "\\<", "") %>% as.numeric()),
+    pfas = make_clean_names(pfas)
+  ) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  pivot_longer(cols = matches("\\d{4}"), names_to = "analysis_year", values_to = "loq")
+
+loqs_samples <- loqs_raw %>%
+  filter(is.na(pfas)) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  select(-pfas) %>%
+  pivot_longer(
+    cols = matches("\\d{4}"),
+    names_to = "analysis_year",
+    values_to = "sample_id"
+  ) %>%
+  drop_na() %>% 
+  mutate(
+    sample_id = mareano_renamer(sample_id)
+  )
+
+loqs <- left_join(
+  loqs_years, loqs_samples,
+  by = c("analysis_year")
+)
+
+# merge data, assign values below LOQ
+pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
+  select(-analysis_year) %>%
+  select(sample_id3, year, area, longitude, latitude, clay_silt_fraction, toc, pfas, pfas_value, loq)
+  
+pfas_data_eq0 <- pfas_raw %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq)) %>%
+  mutate(
+    pfas_value = case_when(
+      pfas_value < max_loq ~ 0,
+      TRUE ~ pfas_value
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(
+    pfas_value = if_else(
+      pfas == "sum_9_pfas",
+      sum(pfas_value[pfas != "sum_9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
+  ) %>%
+  select(-max_loq)
+
+pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
+
+```
+
+
+
+
+# Todo
+-   Add missing longitudes
+-   Explain why silt/clay better than TOC for paper.
+-   Add text with interpretation
+-   Change clay+silt to mud.
+
+# Modeling
+<details>
+
+<summary>Model details</summary>
+
+## Sum PFAS: Tweedie LOQ-0 (candidate)
+
+
+### Fit
+```{r tweedie-fit}
+
+fit_tweedie_0 <- glmmTMB((sum_9_pfas) ~ area + clay_silt_fraction, data = pfas_data_eq0_wide, family = tweedie(link = "log"))
+
+fit_tweedie_0 %>% stepAIC()
+
+broom.mixed::glance(fit_tweedie_0) %>% 
+  bind_cols(tibble(
+  tweedie_power = glmmTMB:::.tweedie_power(fit_tweedie_0),
+  tweedie_dispersion = sigma(fit_tweedie_0)
+)) %>% gt()
+
+broom.mixed::tidy(fit_tweedie_0) %>% select(-c(1,2)) %>% gt()
+
+```
+
+### Validation
+
+```{r sum-dispersion-test-tweedie}
+sim_residuals <- simulateResiduals(fittedModel = fit_tweedie_0, n = 1000)
+testDispersion(sim_residuals)
+```
+
+```{r sum-tweedie-val}
+#| layout-ncol: 2
+#| layout-nrow: 5
+
+plotResiduals(sim_residuals, quantreg = TRUE, smoothScatter = FALSE)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$toc, xlab = "TOC")
+
+
+plotQQunif(sim_residuals, testUniformity = TRUE, 
+           testOutliers = TRUE, testDispersion = TRUE)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$year, xlab = "Year",)
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$latitude, xlab = "Latitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$longitude, xlab = "Longitude")
+
+plotResiduals(sim_residuals, form = pfas_data_eq0_wide$area, xlab = "Area")
+```
+Adding a quadratic term decreases the residuals on toc, though increases AIC. Thus, TOC is kept outside model. Spatial dependency appear to not be systematic, no temporal dependency observed.
+
+
+```{r sum-tweedie-sim}
+#| label: fig-tweedie-obs-sim
+#| fig-cap: "Black dots shows observed values, fitted a Tweedie GLM with log link, values below LOQ set to 0. Ribbons shows the 95% CI of the mean predicted value. Red dots shows simulated values from 100 simulations based on observed values for the covariates."
+
+
+# predict values for CIs
+pred <- ggpredict(fit_tweedie_0, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_0, nsim = 10, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = sum_9_pfas), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("\u03A39PFAS")
+
+pred_plot
+
+```
+
+Model refitted without SV and S retains the clay + silt vs $\Sigma$PFAS relationship.
+
+
+## 3PFAS: Tweedie LOQ-0 (candidate)
+
+
+### Fit
+```{r 3pf-tweedie-fit}
+
+
+fit_tweedie_pfos <- glmmTMB((pfos) ~ area + clay_silt_fraction, data = pfas_data_eq0_wide, family = tweedie(link = "log"))
+
+fit_tweedie_pfos %>% summary()
+
+fit_tweedie_pfos %>% stepAIC(direction = "both", scope = list(upper = ., lower = ~ 1))
+
+
+fit_tweedie_pfoa <- glmmTMB((pfoa) ~ area + clay_silt_fraction, data = pfas_data_eq0_wide, family = tweedie(link = "log"))
+
+fit_tweedie_pfoa %>% summary()
+
+fit_tweedie_pfoa %>% stepAIC(direction = "both", scope = list(upper = ., lower = ~ 1))
+
+
+fit_tweedie_pfna <- glmmTMB((pfna) ~ area + clay_silt_fraction, data = pfas_data_eq0_wide, family = tweedie(link = "log"))
+
+fit_tweedie_pfna %>% stepAIC(direction = "both", scope = list(upper = ., lower = ~ 1))
+
+
+
+map_df(
+  list(fit_tweedie_pfos, fit_tweedie_pfoa, fit_tweedie_pfna),
+  ~ broom.mixed::glance(.x) %>%
+  bind_cols(tibble(
+    tweedie_power = glmmTMB:::.tweedie_power(.x),
+    tweedie_dispersion = sigma(.x)) %>% 
+      mutate(model = str_flatten(.x$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~"), .before = 1)
+  )) %>% 
+  select(model, AIC, tweedie_power, tweedie_dispersion) %>%
+  gt()
+
+
+map_df(
+  list(fit_tweedie_pfos, fit_tweedie_pfoa, fit_tweedie_pfna),
+  ~ broom.mixed::tidy(.x, exponentiate = TRUE) %>%
+    select(-c(1, 2)) %>%
+    mutate(model = str_flatten(.x$frame %>% colnames()) %>% str_extract("pfos|pfoa|pfna"), .before = 1)
+) %>% 
+  select(model, everything()) %>% 
+  gt(groupname_col = "model") %>%
+  fmt_number(columns = vars(estimate, std.error, statistic, p.value), decimals = 3) %>% 
+  # if p.value below 0.5, make text font bold:
+  tab_style(style = list( 
+                         cell_text(weight = 'bold')), 
+            locations = cells_body(columns=vars(p.value), 
+                                   rows = p.value <= 0.05)
+  ) %>% 
+  #make groupname_col bold:
+  tab_style(style = list( 
+                         cell_text(weight = 'bold')), 
+            locations = cells_column_labels(columns=everything())
+  ) %>% 
+  tab_style(
+  style = cell_text(weight = "bold"),
+  locations = cells_row_groups(groups = everything())
+) %>% 
+  cols_label(estimate = "exp(estimate)")
+
+
+```
+
+
+PFOS - clay/silt + area, validation OK (outliers)
+
+PFOA: clay/silt + toc^2^!
+
+PFNA: clay/silt + toc^2^!
+
+
+
+
+### Validation
+
+
+```{r tweedie-val}
+#| layout-ncol: 2
+#| layout-nrow: 5
+
+lapply(list(fit_tweedie_pfos, fit_tweedie_pfoa, fit_tweedie_pfna), function(.) {
+  
+paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")) %>% print()
+  
+  sim_residuals <- simulateResiduals(fittedModel = ., n = 1000, plot = FALSE)
+  
+  plotQQunif(.)
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")))
+  
+  plotResiduals(.)
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")," (Tweedie power=", glmmTMB:::.tweedie_power(.) %>% round(digits = 3), ", sigma=", sigma(.) %>% round(digits = 3),")"))
+  
+    plotResiduals(., form = pfas_data_eq0_wide$toc, .lab = "TOC")
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")))
+
+    plotResiduals(., form = pfas_data_eq0_wide$year, .lab = "Year")
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")))
+  
+      plotResiduals(., form = pfas_data_eq0_wide$latitude, .lab = "Latitude")
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")))
+  
+        plotResiduals(., form = pfas_data_eq0_wide$longitude, .lab = "Longitude")
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")))
+  
+          plotResiduals(., form = pfas_data_eq0_wide$area, .lab = "Area")
+  mtext(paste0(str_flatten(.$frame %>% colnames(), collapse = "+") %>% str_replace("\\+", "~")), side = 1)
+  
+
+})
+
+
+# predict values for CIs
+pred <- ggpredict(fit_tweedie_pfos, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_pfos, nsim = 10, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot_pfos <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = pfos), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("PFOS")
+
+pred_plot_pfos
+
+pred <- ggpredict(fit_tweedie_pfoa, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_pfoa, nsim = 10, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot_pfoa <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = pfoa), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("PFOA")
+
+pred_plot_pfoa
+
+pred <- ggpredict(fit_tweedie_pfna, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_pfna, nsim = 10, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot_pfna <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = pfna), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("PFNA")
+
+pred_plot_pfna
+```
+
+
+
+```{r}
+#| label: fig-sum-tweedie-obs-sim
+#| fig-cap: "Black dots shows observed values, fitted a Tweedie GLM with log link, values below LOQ set to 0. Ribbons shows the 95% CI of the mean predicted value. Red dots shows simulated values from 100 simulations based on observed values for the covariates."
+
+
+# predict values for CIs
+pred <- ggpredict(fit_tweedie_0, terms = c("clay_silt_fraction [1:100]", "area"))
+# simulate
+simulated <- simulate(fit_tweedie_0, nsim = 10, seed = 12345)
+sim_data <- bind_cols(pfas_data_eq0_wide, simulated) %>%
+  pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+  rename(group = area)
+
+pred_plot <- pred %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = clay_silt_fraction, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = clay_silt_fraction, y = sum_9_pfas), data = pfas_data_eq0_wide %>% rename(group = area)) +
+  facet_wrap(~group)+
+  xlab("Clay + silt fraction [%]")+
+  ylab("\u03A39PFAS")
+pred_plot
+
+```
+
+Model refitted without SV and S retains the clay + silt vs $\Sigma$PFAS relationship.
+
+</details>
+
+
+
+
+
+
+</details>
+
+
+
+# Visualization
+
+
+```{r map}
+#| column: screen
+#| out-width: 100%
+
+map_area_conc <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = sum_9_pfas, fill = sum_9_pfas, shape = area), data = pfas_data_eq0_wide, position = position_dodge(width = 10), size = 2, alpha = 0.7) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_color_viridis(option = "magma") +
+  scale_fill_viridis(option = "magma") +
+  scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  #change legend label to Area and \u03A39PFAS:
+  labs(color = "\u03A39PFAS", shape = "Area")+
+  guides(fill = FALSE)
+  
+
+map_area_conc
+
+```
+
+
+```{r}
+ggpairs(pfas_data_eq0_wide %>% 
+          select(
+            area, clay_silt_fraction, toc, sum_9_pfas, pfos, pfoa, pfna
+          ))
+
+ggplot(pfas_data_eq0_wide, aes(clay_silt_fraction, toc))+geom_point()+geom_smooth(method = "lm")+
+  xlab("Clay + silt fraction [%]")+
+  ylab("TOC")
+```
+
+
+
+```{r}
+pred_plot
+```
+
+
+
+```{r}
+pfas_prop <- pfas_data_eq0 %>%
+  # for each area, calculate the proportion of each pfas:
+  group_by(area, pfas) %>% 
+  summarise(
+    pfas_sum = sum(pfas_value, na.rm = TRUE),
+  ) %>% 
+  group_by(area) %>% 
+  mutate(
+    pfas_prop = pfas_sum / sum(pfas_sum[pfas != "sum_9_pfas"], na.rm = TRUE)
+  ) %>% 
+  filter(pfas != "sum_9_pfas")
+
+ggplot(pfas_prop, aes(fill=pfas, y=pfas_prop, x=area)) + 
+    geom_bar(position="stack", stat="identity")+
+  scale_fill_brewer(palette="Set3")+
+  xlab("Area")+ylab("Propotion")+
+  #legend title PFAS:
+  labs(fill = "PFAS")
+```
+
+
+# Tables
+
+```{r area-hypothesis}
+
+glht(fit_tweedie_0, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% 
+  mutate(estimate = exp(estimate)) %>% 
+  rename("exp(estimate)" = estimate) %>% 
+  gt() %>% tab_header(title = "Sum9: Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+
+glht(fit_tweedie_pfos, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% 
+  mutate(estimate = exp(estimate)) %>% 
+  rename("exp(estimate)" = estimate) %>% 
+  gt() %>% tab_header(title = "PFOS: Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+glht(fit_tweedie_pfoa, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% 
+  mutate(estimate = exp(estimate)) %>% 
+  rename("exp(estimate)" = estimate) %>% 
+  gt() %>% tab_header(title = "PFOA: Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+glht(fit_tweedie_pfna, linfct = mcp(area = "Tukey")) %>%
+  # automatically Tukey-adjusted p-values in summary
+  summary() %>%  tidy() %>% select(-c(term, null.value)) %>% 
+  mutate(estimate = exp(estimate)) %>% 
+  rename("exp(estimate)" = estimate) %>% 
+  gt() %>% tab_header(title = "PFNA: Tukey post-hoc test for area") %>% 
+  fmt_number(columns = 2:5,decimals = 2)
+
+```
+
+
+```{r n-below-lod}
+# pfas_raw %>% group_by(pfas) %>% 
+#   summarise(
+#     n = sum(above_loq),
+#     n_samples = n_distinct(sample_id3)
+#   ) %>% 
+#   mutate(
+#     p = n / n_samples
+#   ) %>% arrange(p) %>% 
+#   gt() %>% 
+#   fmt_percent(columns = vars(p)) %>% 
+#   # name gt table:
+#   tab_header(
+#     title = md("Number of samples above LOQ"),
+#     subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
+#   ) %>% 
+#   cols_label(
+#     pfas = md("**PFAS**"),
+#     n = md("**# samples > LOQ**"),
+#     n_samples = md("**# samples**"),
+#     p = md("**Proportion > LOQ**")
+#   )
+```
+
+
+
+
+```{r}
+
+pfas_data_eq0_wide %>% group_by(area) %>% 
+  #mean, sd for each area for each of sum_9_pfas, toc, clay_silt_fraction:
+  summarise(
+    sum_9_pfas = mean(sum_9_pfas, na.rm = TRUE),
+    toc = mean(toc, na.rm = TRUE),
+    clay_silt_fraction = mean(clay_silt_fraction, na.rm = TRUE),
+    n = n()
+  ) %>% gt() %>% 
+  fmt_number(columns = 2:4,decimals = 1) %>% 
+  tab_spanner(label = "Mean", columns = 2:4) %>% 
+  tab_header(title = "Summary of covariates by area, <LOQ = 0") %>% 
+  cols_label(
+    area = md("**Area**"),
+    sum_9_pfas = md("**\u03A39PFAS**"),
+    toc = md("**TOC**"),
+    clay_silt_fraction = md("**Clay + silt %**")
+  )
+
+```
