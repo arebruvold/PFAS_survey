@@ -335,22 +335,33 @@ map_area_conc
 ## Mean values by area
 ```{r}
 
-pfas_data_eq0_wide %>% group_by(area) %>% 
-  #mean, sd for each area for each of s9_pfas, toc, mud:
+pfas_data_eq0_wide %>%
+  group_by(area) %>%
+  # mean, sd for each area for each of s9_pfas, toc, mud:
   summarise(
     s9_pfas = mean(s9_pfas, na.rm = TRUE),
+    pfos = mean(pfos, na.rm = TRUE),
+    pfoa = mean(pfoa, na.rm = TRUE),
+    pfna = mean(pfna, na.rm = TRUE),
+    pf_un_a = mean(pf_un_a, na.rm = TRUE),
     toc = mean(toc, na.rm = TRUE),
     mud = mean(mud, na.rm = TRUE),
     n = n()
-  ) %>% gt() %>% 
-  fmt_number(columns = 2:4,decimals = 1) %>% 
-  tab_spanner(label = "Mean", columns = 2:4) %>% 
-  tab_header(title = "Summary of covariates by area, <LOQ = 0") %>% 
+  ) %>%
+  gt() %>%
+  fmt_number(columns = 2:8, decimals = 1) %>%
+  tab_spanner(label = "Mean", columns = 2:8) %>%
+  tab_header(title = "Summary of covariates by area, <LOQ = 0") %>%
   cols_label(
     area = md("**Area**"),
     s9_pfas = md("**\u03A39PFAS**"),
+    pfos = md("**PFOS**"),
+    pfoa = md("**PFOA**"),
+    pfna = md("**PFNA**"),
+    pf_un_a = md("**PFUnA**"),
     toc = md("**TOC**"),
-    mud = md("**Clay + silt %**")
+    mud = md("**Mud**"),
+    n = md("**n**")
   )
 
 ```
@@ -384,7 +395,7 @@ pfas_w_models %>%
   mutate(
     Parameter = if_else(Component == "dispersion" & Parameter == "(Intercept)", "(Tweedie dispersion)", Parameter)
   ) %>%
-  select(pfas, Parameter, Coefficient, CI_low, CI_high, p) %>%
+  select(pfas, Parameter, Estimate = Coefficient, CI_low, CI_high, p) %>%
   gt() %>% 
     fmt_number(columns = 4:6, decimals = 2) %>% 
   fmt_number(columns = 3, decimals = 3) %>% 
@@ -395,7 +406,7 @@ pfas_w_models %>%
   tab_style(
   style = cell_text(weight = "bold"),
   locations = cells_row_groups(groups = everything())
-)
+) %>% tab_header(title = "Regression table", subtitle = "Model coefficients exponentiated, tweedie parameters unchanged.")
 ```
 
 
@@ -477,7 +488,7 @@ ggplot(pfas_data_eq0_wide, aes(mud, toc))+geom_point()+geom_smooth(method = "lm"
 ```
 
 ```{r reg-table}
-tbl_merge(pfas_w_models$reg_table, tab_spanner = c("s9_pfas", "pfos", "pfoa", "pfna", "pf_un_a")) %>% as_gt()
+# tbl_merge(pfas_w_models$reg_table, tab_spanner = c("s9_pfas", "pfos", "pfoa", "pfna", "pf_un_a")) %>% as_gt()
 
 ```
 
