@@ -1,0 +1,483 @@
+---
+execute:
+  warning: false
+format:
+  html:
+    embed-resources: true
+    code-fold: true
+---
+
+# Data cleaning
+
+```{r setup-cleaning}
+# packages
+library(tidyverse)
+library(readxl)
+library(ggmap)
+library(janitor)
+library(ggrepel)
+library(GGally)
+library(targets)
+library(gt)
+library(DataExplorer)
+library(patchwork)
+library(ggh4x)
+library(ggthemes)
+library(glmmTMB)
+library(DHARMa)
+library(performance)
+library(MASS)
+library(scales)
+library(viridis)
+library(gtsummary)
+library(ggeffects)
+library(multcomp)
+library(broom)
+library(broom.mixed)
+library(parameters)
+select <- dplyr::select
+set.seed(12345)
+
+# set theme
+survey_theme <- theme_few()
+theme_set(survey_theme)
+
+## for renaming sample ids to fix inconsistencies
+mareano_renamer <- function(ss_in) {
+  
+  sub_renamer <- function(ss_in){
+  # check input
+  stopifnot("requires single character string input." = length(ss_in) == 1 && is.character(ss_in))
+
+  # for all strings remove spaces and replace BC with BX
+  ss_out <- ss_in %>%
+    str_replace_all("\\s", "") %>%
+    str_replace_all("BC", "BX")
+  # return if string do not contain MC or BX, as errors only with BX/MC
+  if (str_detect(ss_out, "MC|BX", negate = TRUE)) {
+    return(ss_out)}
+  
+  # part of name including BX/MC
+  ss_prefix <- str_extract(ss_out, ".+[BXMC]+")
+  # suffix-numbers with incoherent lengths
+  ss_suffix <- str_extract(ss_out, "[0-9]+$")
+
+  # change lengths
+  if (str_length(ss_suffix) == 3) {
+    return(ss_out)
+  } else if (str_length(ss_suffix) == 2) {
+    return(paste0(ss_prefix, "0", ss_suffix))
+  } else if (str_length(ss_suffix) == 1) {
+    return(paste0(ss_prefix, "00", ss_suffix))
+  } else {
+    # break with error message "suffix string not of length 1, 2 or 3":
+    stop("suffix string not of length 1, 2 or 3")
+  }
+  }
+  
+  ss_out <-  map_chr(ss_in, sub_renamer)
+  return(ss_out)
+}
+
+
+# to fix shifted column names
+newnames <- (read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>% clean_names())[1, 16:29] %>% as_vector()
+
+# appending correct column names
+dataset <- read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>%
+  clean_names() %>%
+  rename_with(.cols = x16:x29, ~newnames) %>%
+  clean_names() %>%
+  slice(-1) %>%
+  select(
+    sample_id = sample,
+    year = cruise_3,
+    number = cruise_4,
+    from_cm_o = sample_interval_top_bottom_5,
+    to_cm_o = x6,
+    longitude = dde,
+    latitude = ddn,
+    depth_m = mbsl,
+    sample_id2 = x1096mc002,
+    sample_id3 = sample_2,
+    from_cm_i = sample_interval_top_bottom_12,
+    to_cm_i = x13,
+    clay_fraction,
+    silt_fraction,
+    mud = mud_percent,
+    toc = toc_percent,
+    pfos:pf_tri_a,
+    s9_pfas = sum_9_pfas,
+  ) %>%
+  filter(
+    !is.na(year)
+  ) %>%
+  mutate(across(!matches("sample"), as.numeric)) %>%
+  # assign areas:
+  mutate(
+    area = case_when(
+      row_number() %in% c(1:18) ~ "SV",
+      row_number() %in% c(19:45) ~ "BH mid",
+      row_number() %in% c(46:66) ~ "BH sør",
+      row_number() %in% c(67:89) ~ "NH",
+      row_number() %in% c(90:95) ~ "S",
+      TRUE ~ "Other"
+    ),
+    area = as.factor(area)
+  ) %>%
+  pivot_longer(
+    cols = pfos:s9_pfas, names_to = "pfas", values_to = "pfas_value"
+  ) %>%
+  mutate(sample_id3 = mareano_renamer(sample_id3))
+
+
+# import curated LOQs
+loqs_raw <- read_excel("data/LOQs.xlsx") %>%
+  clean_names() %>%
+  select(-enhet) %>%
+  rename(pfas = forbindelse)
+
+loqs_years <- loqs_raw %>%
+  filter(!(is.na(pfas))) %>%
+  mutate(across(-pfas, ~ str_replace_all(.x, "\\<", "") %>% as.numeric()),
+    pfas = make_clean_names(pfas)
+  ) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  pivot_longer(cols = matches("\\d{4}"), names_to = "analysis_year", values_to = "loq")
+
+loqs_samples <- loqs_raw %>%
+  filter(is.na(pfas)) %>%
+  rename_with(.cols = everything(), ~ str_replace(.x, "_2", "A") %>% str_replace("_3", "B")) %>%
+  select(-pfas) %>%
+  pivot_longer(
+    cols = matches("\\d{4}"),
+    names_to = "analysis_year",
+    values_to = "sample_id"
+  ) %>%
+  drop_na() %>% 
+  mutate(
+    sample_id = mareano_renamer(sample_id)
+  )
+
+loqs <- left_join(
+  loqs_years, loqs_samples,
+  by = c("analysis_year")
+)
+
+# merge data, assign values below LOQ
+pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
+  select(-analysis_year) %>%
+  select(sample_id3, year, area, longitude, latitude, mud, toc, pfas, pfas_value, loq)
+  
+pfas_data_eq0 <- pfas_raw %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq)) %>%
+  mutate(
+    pfas_value = case_when(
+      pfas_value < max_loq ~ 0,
+      TRUE ~ pfas_value
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(
+    pfas_value = if_else(
+      pfas == "s9_pfas",
+      sum(pfas_value[pfas != "s9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
+  ) %>%
+  select(-max_loq)
+
+pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
+
+```
+
+# Todo
+-   Fix PFAS names and figure numbering
+-   Tables to docx
+-   Explain why silt/clay better than TOC for paper.
+-   Add text with interpretation
+-   Write statistics in methods
+
+# Modeling
+<details>
+
+<summary>Details and model validation</summary>
+
+## Fit
+
+A Gaussian GLM with log link was found overdispersed, hence a Tweedie GLM with log link was fitted. PFAS are influced by known dependent variables TOC and mud content, as well as geographical location. Consequently, a model with the terms area, toc and mud was fitted. Data exploration showed mud to be collinear with TOC, and stepwise model selection based on Akaike's information criteria showed mud to have higher predictive value than TOC. Thus, area and mud was retained to test the hypothesis if PFAS concentration was higher in any area. Thus, the model **C~PFAS~ ~ area + mud** was employed for the regression analyses.
+
+```{r model-fits}
+pfas_glm <- function(in_dat){
+  glmmTMB(data = in_dat, formula = pfas_value ~ area+mud, family = tweedie(link = "log"))
+}
+
+
+pfas_w_models <-
+  pfas_data_eq0 %>%
+  mutate(
+    pfas = fct_relevel(pfas, c("s9_pfas", "pfos", "pfoa", "pfna", "pf_un_a")),
+    pfas_label = pfas
+  ) %>%
+  arrange(pfas) %>%
+  group_by(pfas) %>%
+  nest() %>%
+  filter(pfas %in% c("s9_pfas", "pfos", "pfoa", "pfna", "pf_un_a")) %>%
+  mutate(
+    m_fit = map(data, pfas_glm),
+    tidy = map(m_fit, ~ broom.mixed::tidy(.x, exponentiate = TRUE)),
+    glance = map(m_fit, broom.mixed::glance),
+    augment = map2(m_fit, data, ~ broom.mixed::augment(.x, .y)),
+    pred = map(m_fit, ~ ggpredict(.x, terms = c("mud [1:100]", "area"))),
+    simulated = map(m_fit, ~ simulate(.x, nsim = 25, seed = 12345)),
+    sim_data = map2(
+      simulated, data, ~ bind_cols(.x, .y) %>%
+        pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+        rename(group = area)
+    ),
+    area_model = map2(m_fit, pfas, ~ glht(.x, linfct = mcp(area = "Tukey"))), #%>%
+      # summary() %>%
+      # tidy() %>%
+      # select(-c(term, null.value)) %>%
+      # mutate(estimate = exp(estimate)) %>%
+      # rename("exp(estimate)" = estimate)),
+    reg_table = map(m_fit, ~ tbl_regression(.x, exponentiate = TRUE, tidy_fun = broom.mixed::tidy), estimate_fun = purrr::partial(style_ratio, digits = 3))
+  )
+
+
+```
+
+
+## Model validation
+
+```{r model-sim}
+sim_data <- pfas_w_models %>% 
+  unnest(sim_data)
+
+pred_data <- pfas_w_models %>% unnest(pred)
+
+pred_data %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(data = sim_data, aes(x = mud, y = sim), alpha = 0.1, size = 0.2, color = muted("red"))+
+  geom_point(aes(x = mud, y = pfas_value),
+             data = sim_data %>% distinct(sample_id3, .keep_all = TRUE)) +
+  facet_grid(pfas~group, scales = "free")+
+  xlab("Mud [%]")+
+  ylab("PFAS [\u03BCg/kg]")
+
+
+```
+
+```{r dharma-validation}
+#| layout-ncol: 2
+dharma_printer <- function(mod, in_dat){
+  sim_resid <- simulateResiduals(fittedModel = mod, n = 1000)
+  pfas_name <- in_dat$pfas_label[1]
+  
+  plot.new()
+mtext(paste(pfas_name), cex = 4)
+
+  plotQQunif(sim_resid)
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(sim_resid)
+  mtext(paste0(pfas_name,"~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ," (T-P=", glmmTMB:::.tweedie_power(mod) %>% round(digits = 3), ", d=", sigma(mod) %>% round(digits = 3),")"), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(mod, form = in_dat$area, sim_residlab = "Area")
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(mod, form = in_dat$toc, sim_residlab = "TOC")
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(sim_resid, form = in_dat$year, sim_residlab = "Year")
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(sim_resid, form = in_dat$latitude, sim_residlab = "Latitude")
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+
+  plotResiduals(sim_resid, form = in_dat$longitude, sim_residlab = "Longitude")
+  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+") ), side = 4, col = 2, cex = 1.5)
+}
+
+
+map2(pfas_w_models$m_fit, pfas_w_models$data, ~ dharma_printer(.x, .y))
+
+
+```
+
+# Results
+
+## Map
+```{r map}
+#| column: page
+#| out-width: 100%
+
+map_area_conc <-
+  ggmap(tar_read(stadia_map)) +
+  geom_point(aes(x = longitude, y = latitude, color = s9_pfas, fill = s9_pfas, shape = area), data = pfas_data_eq0_wide, position = position_dodge(width = 10), size = 2, alpha = 0.7) +
+  labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  scale_color_viridis(option = "magma") +
+  scale_fill_viridis(option = "magma") +
+  scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  #change legend label to Area and \u03A39PFAS:
+  labs(color = "\u03A39PFAS", shape = "Area")+
+  guides(fill = FALSE)
+  
+
+map_area_conc
+
+```
+
+
+## Mean values by area
+```{r}
+
+pfas_data_eq0_wide %>% group_by(area) %>% 
+  #mean, sd for each area for each of s9_pfas, toc, mud:
+  summarise(
+    s9_pfas = mean(s9_pfas, na.rm = TRUE),
+    toc = mean(toc, na.rm = TRUE),
+    mud = mean(mud, na.rm = TRUE),
+    n = n()
+  ) %>% gt() %>% 
+  fmt_number(columns = 2:4,decimals = 1) %>% 
+  tab_spanner(label = "Mean", columns = 2:4) %>% 
+  tab_header(title = "Summary of covariates by area, <LOQ = 0") %>% 
+  cols_label(
+    area = md("**Area**"),
+    s9_pfas = md("**\u03A39PFAS**"),
+    toc = md("**TOC**"),
+    mud = md("**Clay + silt %**")
+  )
+
+```
+
+## Sum9 PFAS vs mud by area
+
+```{r}
+pred_data %>%
+  filter(pfas == "s9_pfas") %>%
+  ggplot(aes(x, predicted)) +
+  geom_smooth(color = muted("red")) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(aes(x = mud, y = pfas_value),
+    data = sim_data %>% filter(pfas == "s9_pfas") %>% distinct(sample_id3, .keep_all = TRUE)
+  ) +
+  facet_wrap(~ group) +
+  xlab("Mud [%]") +
+  ylab("\u03A39PFAS [\u03BCg/kg]")
+```
+
+## Regression table
+
+```{r}
+pfas_w_models %>%
+  select(pfas, m_fit) %>%
+  mutate(
+    regression_table = map(m_fit, ~ model_parameters(.x, exponentiate = TRUE) %>% add_row(Parameter = "(Tweedie power)", Coefficient = glmmTMB:::.tweedie_power(.x)))
+    # tweedie_power = map(m_fit, ~ glmmTMB:::.tweedie_power(.x))
+  ) %>%
+  unnest(regression_table) %>%
+  mutate(
+    Parameter = if_else(Component == "dispersion" & Parameter == "(Intercept)", "(Tweedie dispersion)", Parameter)
+  ) %>%
+  select(pfas, Parameter, Coefficient, CI_low, CI_high, p) %>%
+  gt() %>% 
+    fmt_number(columns = 4:6, decimals = 2) %>% 
+  fmt_number(columns = 3, decimals = 3) %>% 
+  tab_style(style = list( 
+                         cell_text(weight = 'bold')), 
+            locations = cells_column_labels(columns=everything())
+  ) %>% 
+  tab_style(
+  style = cell_text(weight = "bold"),
+  locations = cells_row_groups(groups = everything())
+)
+```
+
+
+## Area hypothesis
+
+```{r}
+areas_table <- pfas_w_models %>%
+  select(pfas, area_model) %>%
+  mutate(
+    area_hypothesis = map(area_model, ~ model_parameters(.x, exponentiate = TRUE))
+  ) %>%
+  unnest(area_hypothesis) %>%
+  select(-c(area_model, SE, CI, z, df_error))
+
+areas_table %>%
+  rename("exp(estimate)" = Coefficient) %>%
+  gt(groupname_col = "pfas") %>%
+  fmt_number(columns = 3:6, decimals = 2) %>% 
+  tab_style(style = list( 
+                         cell_text(weight = 'bold')), 
+            locations = cells_column_labels(columns=everything())
+  ) %>% 
+  tab_style(
+  style = cell_text(weight = "bold"),
+  locations = cells_row_groups(groups = everything())
+) %>% 
+   tab_style(style = list( 
+                         cell_text(weight = 'bold')), 
+            locations = cells_body(columns=everything(), 
+                                   rows = p <= 0.05)
+  )
+
+```
+
+
+# Supplementary
+
+
+```{r}
+pfas_data_eq0 %>% 
+  filter(pfas != "s9_pfas") %>% 
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq, na.rm = TRUE)) %>% 
+  summarise(
+    n = sum(pfas_value > max_loq),
+    n_samples = n_distinct(sample_id3)
+  ) %>%
+  mutate(
+    p = n / n_samples
+  ) %>% arrange(desc(p)) %>%
+  select(-n_samples) %>%
+  gt() %>%
+  fmt_percent(columns = vars(p)) %>%
+  # name gt table:
+  tab_header(
+    title = md("Number of samples above LOQ"),
+    subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
+  ) %>%
+  cols_label(
+    pfas = md("**PFAS**"),
+    n = md("**n > LOQ**"),
+    p = md("**Proportion > LOQ**")
+  )
+```
+
+
+```{r pairs}
+ggpairs(pfas_data_eq0_wide %>% 
+          select(
+            area, mud, toc, s9_pfas, pfos, pfoa, pfna, pf_un_a
+          ))
+
+```
+
+```{r toc-v-mud}
+ggplot(pfas_data_eq0_wide, aes(mud, toc))+geom_point()+geom_smooth(method = "lm")+
+  xlab("Mud [%]")+
+  ylab("TOC")
+```
+
+```{r reg-table}
+tbl_merge(pfas_w_models$reg_table, tab_spanner = c("s9_pfas", "pfos", "pfoa", "pfna", "pf_un_a")) %>% as_gt()
+
+```
+
