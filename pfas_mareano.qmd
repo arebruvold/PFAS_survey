@@ -373,6 +373,27 @@ pfas_data_eq0_wide %>%
   )
 ```
 
+```{r}
+pfas_prop <- pfas_data_eq0 %>%
+  # for each area, calculate the proportion of each pfas:
+  group_by(area, pfas) %>% 
+  summarise(
+    pfas_sum = sum(pfas_value, na.rm = TRUE),
+  ) %>% 
+  group_by(area) %>% 
+  mutate(
+    pfas_prop = pfas_sum / sum(pfas_sum[pfas != "Σ9PFAS"], na.rm = TRUE)
+  ) %>% 
+  filter(pfas != "Σ9PFAS")
+
+ggplot(pfas_prop, aes(fill=pfas, y=pfas_prop, x=area)) + 
+    geom_bar(position="stack", stat="identity")+
+  scale_fill_brewer(palette="Set3")+
+  xlab("Area")+ylab("Propotion")+
+  #legend title PFAS:
+  labs(fill = "")
+```
+
 ## PFAS vs mud by area
 
 ```{r sum9}
