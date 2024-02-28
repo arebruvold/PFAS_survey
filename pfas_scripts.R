@@ -1,5 +1,6 @@
-# fns
-# https://www.mankier.com/1/obabel
+# useful pfas fns
+# (c) Are Sæle Bruvold 2024
+# obabel documentation: https://www.mankier.com/1/obabel
 
 ## pcprop
 pcprop_from_name <-
