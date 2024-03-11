@@ -8,8 +8,12 @@ format:
     toc: true
 ---
 # Todo
+-   Finalize chemical properties table.
+      - "name, structure, LogP, RT, m/z (or Mwt), chemical formula, and confidence level + class"
 -   Tables to docx if needed.
--   Could elaborate on results and model validation
+-   Change CI on TOC vs Mud to Gamma, maybe others also.
+-   Undersøke prøver mellom prøve-LOQ og høyeste LOQ, Stepan mener vurdere bruke invididuell LOQ.
+-   Se stepan mail og rette.
 
 # Data cleaning
 ```{r setup-cleaning}
@@ -45,6 +49,8 @@ set.seed(12345)
 # set theme
 survey_theme <- theme_few()
 theme_set(survey_theme)
+
+source("pfas_scripts.R")
 
 ## for renaming sample ids to fix inconsistencies
 mareano_renamer <- function(ss_in) {
@@ -159,7 +165,9 @@ loqs_samples <- loqs_raw %>%
   ) %>%
   drop_na() %>% 
   mutate(
-    sample_id = mareano_renamer(sample_id)
+    sample_id = mareano_renamer(sample_id),
+    #correct sample_id error
+    sample_id = if_else(sample_id == "R2924BX001", "R2924BX002", sample_id )
   )
 
 loqs <- left_join(
@@ -174,7 +182,7 @@ pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id"))
   
 pfas_data_eq0 <- pfas_raw %>%
   group_by(pfas) %>%
-  mutate(max_loq = max(loq)) %>%
+  mutate(max_loq = max(loq, na.rm = TRUE)) %>%
   mutate(
     pfas_value = case_when(
       pfas_value < max_loq ~ 0,
@@ -212,7 +220,7 @@ pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq)), names_from 
 
 ```
 
-LOQs varied between different analytical batches and was set to the highest value across all years to avoid the LOQ becoming a confounder. To best represent the totality of the dataset, values below LOQ were set to 0. This decision results in conservative estimates for concentrations and in comparison to setting observations below LOQ to LOQ/2 resulted in a relative minor increase in the coefficient estimates for Mud.
+The LOQs varied between years; therefore, to avoid the potential of LOQ serving as a confounding variable, the highest value observed was uniformly applied. Values falling below the LOQ were assigned a zero, yielding conservative estimates of concentrations, and in comparison to assigning LOQ/2, resulting in a marginal rise in the coefficient estimates associated with mud.
 
 # Modeling
 
@@ -285,42 +293,42 @@ pred_data %>% ggplot(aes(x, predicted)) +
   xlab("Mud [%]")+
   ylab("PFAS [\u03BCg/kg]")
 ```
-Shown are the model fits on the original scale, with observations shown by black dots. Small red dots shows 25 simulations from the model for each combination of each observed value based on its covariate values.
+Shown are the model fits on the original scale, with observations shown by black dots. Small red dots shows 25 simulations from the model for each combination of observed covariate values.
 
 ```{r dharma-validation}
 #| layout-ncol: 2
-dharma_printer <- function(mod, in_dat) {
-  sim_resid <- simulateResiduals(fittedModel = mod, n = 1000)
-  pfas_name <- in_dat$pfas_label[1]
-  ## for naming plots
-  #   plot.new()
-  # mtext(paste(pfas_name), cex = 4)
-  testZeroInflation(sim_resid)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotQQunif(sim_resid)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(sim_resid)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+"), " (T-P=", glmmTMB:::.tweedie_power(mod) %>% round(digits = 3), ", d=", sigma(mod) %>% round(digits = 3), ")"), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(mod, form = in_dat$Area)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(mod, form = in_dat$TOC)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(sim_resid, form = in_dat$year)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(sim_resid, form = in_dat$latitude)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-
-  plotResiduals(sim_resid, form = in_dat$longitude)
-  mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
-}
-
-map2(pfas_w_models$m_fit, pfas_w_models$data, ~ dharma_printer(.x, .y))
+# dharma_printer <- function(mod, in_dat) {
+#   sim_resid <- simulateResiduals(fittedModel = mod, n = 1000)
+#   pfas_name <- in_dat$pfas_label[1]
+#   ## for naming plots
+#   #   plot.new()
+#   # mtext(paste(pfas_name), cex = 4)
+#   testZeroInflation(sim_resid)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotQQunif(sim_resid)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(sim_resid)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+"), " (T-P=", glmmTMB:::.tweedie_power(mod) %>% round(digits = 3), ", d=", sigma(mod) %>% round(digits = 3), ")"), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(mod, form = in_dat$Area)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(mod, form = in_dat$TOC)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(sim_resid, form = in_dat$year)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(sim_resid, form = in_dat$latitude)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# 
+#   plotResiduals(sim_resid, form = in_dat$longitude)
+#   mtext(paste0(pfas_name, "~", str_flatten(mod$frame %>% select(-1) %>% colnames(), collapse = "+")), side = 4, col = 2, cex = 1.5)
+# }
+# 
+# map2(pfas_w_models$m_fit, pfas_w_models$data, ~ dharma_printer(.x, .y))
 ```
 
 Plots above show scaled quantile residuals using the DHARMa package. These are obtained by simulating from the fitted model and comparing to the observed residuals. The DHaRMa residuals are expected to be uniformly distributed around 0, red lines parallel and near the dotted grey lines. The quantile-quantile plot are expected to follow the 45-degree line. Plots are grouped by PFAS and Area.
@@ -382,28 +390,50 @@ pfas_data_eq0_wide %>%
 
 ```{r}
 
-pfas_data_eq0_wide %>%
+pfas_ratios <- pfas_data_eq0_wide %>%
   mutate(
     "PFOA_to_PFNA" = if_else(PFOA == 0 | PFNA == 0, NA, PFOA / PFNA),
     "PFDcA_to_PFUnA" = if_else(PFDcA == 0 | PFUnA == 0, NA, PFDcA / PFUnA)
   ) %>%
-  select("PFOA_to_PFNA", "PFDcA_to_PFUnA", sample_id3:TOC) %>%
+  select("PFOA_to_PFNA", "PFDcA_to_PFUnA",PFOA, PFNA, PFDcA, PFUnA, sample_id3:TOC) %>%
   pivot_longer(
     cols = c("PFOA_to_PFNA", "PFDcA_to_PFUnA"),
     names_to = "pfas",
     values_to = "Ratio"
-  ) %>%
+  ) %>% mutate(c1 = if_else(pfas == "PFOA_to_PFNA", PFOA, PFDcA),
+               c2 = if_else(pfas == "PFOA_to_PFNA", PFNA, PFUnA)
+  ) %>% 
+  mutate(pfas = case_when(
+      pfas == "PFOA_to_PFNA" ~ "PFOA / PFNA",
+      pfas == "PFDcA_to_PFUnA" ~ "PFDcA / PFUnA"
+    )
+  )
+  
+  pfas_ratios %>% 
   ggplot(aes(Area, Ratio)) +
-  geom_jitter(width = 0.2) +
+  geom_jitter(width = 0.2, size = 3) +
   # mean for each Area using stat summary:
   stat_summary(aes(group = 1),
     fun = mean, geom = "line",
     linetype = "dotted",
     size = 0.5, fill = "black"
   ) +
+    scale_color_viridis(option = "magma") +
+  scale_fill_viridis(option = "magma")+
   stat_summary(geom = "errorbar", fun.data = mean_cl_normal, fun.args = list(conf.int = 0.95), size = 0.7, width = 0.5) +
   xlab("Area") +
   facet_wrap(~pfas, scales = "free")
+  
+  pfas_ratios %>% group_by(Area, pfas) %>% summarise( mean =  mean(Ratio, na.rm = T)) %>% 
+    mutate(pfas = case_when(
+      pfas == "PFOA_to_PFNA" ~ "PFOA / PFNA",
+      pfas == "PFDcA_to_PFUnA" ~ "PFDcA / PFUnA"
+    )) %>% 
+    pivot_wider(
+      names_from = Area,
+      values_from = mean) %>% 
+    gt() %>% 
+    fmt_number(2:6, decimals = 1)
   
 ```
 
@@ -419,8 +449,6 @@ outlier_cand <- pfas_data_eq0_wide %>%
   filter(PFOA_to_PFNA > 3 | PFDcA_to_PFUnA < 0.3)
 
 outlier_cand %>% gt() %>% fmt_number(columns = longitude:PFDcA_to_PFUnA)
-
-outlier_cand %>% View()
 
 library(leaflet)
 library(leafem)
@@ -520,14 +548,18 @@ pred_data %>%
 library(factoextra)
 library(FactoMineR)
 # apply PCA
-pca <- pfas_data_eq0_wide %>% select(Mud:"Σ9PFAS") %>% select(-"Σ9PFAS", -"PFDoA", -"PFTriA") %>%  prcomp(center = TRUE, scale. = TRUE)
+pca <- pfas_data_eq0_wide %>% select(Mud:"Σ9PFAS") %>%
+  select(-"Σ9PFAS", 
+         -"PFDoA", -"PFTriA"
+         ) %>%
+  prcomp(center = TRUE, scale. = TRUE)
 
 Area_pcatag <- pfas_data_eq0_wide %>% select(Area)
 
 
 
 pca_Area <- fviz_pca_biplot(pca,
-                axes = c(1:2),
+                axes = c(1,2),
                 repel = TRUE,
                 fill.ind = Area_pcatag$Area,
                 pointshape = 21,
@@ -641,7 +673,7 @@ Area_wmodels <-
     tidy = map(m_fit, ~ broom.mixed::tidy(.x, exponentiate = TRUE)),
     glance = map(m_fit, broom.mixed::glance),
     augment = map2(m_fit, data, ~ broom.mixed::augment(.x, .y)),
-    pred = map(m_fit, ~ ggpredict(.x, terms = c("Mud [1:100]"))),
+    pred = map(m_fit, ~ ggpredict(.x, terms = c("Mud [1:100]"), back_transform = TRUE)),
     simulated = map(m_fit, ~ simulate(.x, nsim = 25, seed = 12345)),
     sim_data = map2(
       simulated, data, ~ bind_cols(.x, .y) %>%
@@ -663,11 +695,11 @@ Area_wmodels %>%
 
 # test colours:
 
-testcol <- expand_grid(my_l = seq(0,100, 10), my_c= seq(0,100, 10)) %>% 
-  # mutate(color = muted("red", l = my_l, c = my_c))
-  mutate(hei = map2(my_l, my_c, ~muted("blue", .x, .y))
-  )
-show_col(testcol$hei %>% as_vector())
+# testcol <- expand_grid(my_l = seq(0,100, 10), my_c= seq(0,100, 10)) %>% 
+#   # mutate(color = muted("red", l = my_l, c = my_c))
+#   mutate(hei = map2(my_l, my_c, ~muted("blue", .x, .y))
+#   )
+# show_col(testcol$hei %>% as_vector())
 ```
 
 
@@ -769,31 +801,125 @@ pfas_w_models %>%
 ## Observations above LOQ
 
 ```{r}
-#| label: tbl-above-loq
-#| tbl-cap: "Number of observations above LOQ for each PFAS out of 95 sampled locations.."
-pfas_data_eq0 %>% 
-  filter(pfas != "Σ9PFAS") %>% 
+# #| label: tbl-above-loq
+# #| tbl-cap: "Number of observations above LOQ for each PFAS out of 95 sampled locations.."
+# pfas_data_eq0 %>% 
+#   filter(pfas != "Σ9PFAS") %>% 
+#   group_by(pfas) %>%
+#   mutate(max_loq = max(loq, na.rm = TRUE)) %>% #distinct(pfas, max_loq) %>%  View()
+#   summarise(
+#     n = sum(pfas_value > max_loq),
+#     n_samples = n_distinct(sample_id3)
+#   ) %>%
+#   mutate(
+#     p = n / n_samples
+#   ) %>% arrange(desc(p)) %>%
+#   select(-n_samples) %>%
+#   gt() %>%
+#   fmt_percent(columns = vars(p), decimals = 0) %>%
+#   # tab_header(
+#   #   title = md("Number of samples above LOQ"),
+#   #   subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
+#   # ) %>%
+#   cols_label(
+#     pfas = md("**PFAS**"),
+#     n = md("**n > LOQ**"),
+#     p = md("**Proportion > LOQ**")
+#   )
+```
+
+```{r between-maxloq-loq}
+#| label: tbl-between-loq
+#| tbl-cap: "Samples and fraction above the different LOQs for each PFAS."
+
+between_maxloqloq <- pfas_raw %>%
   group_by(pfas) %>%
-  mutate(max_loq = max(loq, na.rm = TRUE)) %>% 
-  summarise(
-    n = sum(pfas_value > max_loq),
-    n_samples = n_distinct(sample_id3)
+  mutate(max_loq = max(loq, na.rm = TRUE)) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(
+    pfas_value = if_else(
+      pfas == "s9_pfas",
+      sum(pfas_value[pfas != "s9_pfas"], na.rm = TRUE),
+      pfas_value
+    )
   ) %>%
   mutate(
-    p = n / n_samples
-  ) %>% arrange(desc(p)) %>%
-  select(-n_samples) %>%
-  gt() %>%
-  fmt_percent(columns = vars(p)) %>%
-  # tab_header(
-  #   title = md("Number of samples above LOQ"),
-  #   subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
-  # ) %>%
+    pfas = case_when(
+      pfas == "s9_pfas" ~ "Σ9PFAS",
+      pfas == "pfos" ~ "PFOS",
+      pfas == "pfoa" ~ "PFOA",
+      pfas == "pfna" ~ "PFNA",
+      pfas == "pf_un_a" ~ "PFUnA",
+      pfas == "pf_hx_a" ~ "PFHxA",
+      pfas == "pf_hp_a" ~ "PFHpA",
+      pfas == "pf_dc_a" ~ "PFDcA",
+      pfas == "pf_do_a" ~ "PFDoA",
+      pfas == "pf_tri_a" ~ "PFTriA",
+      TRUE ~ NA_character_
+    )
+  ) %>% 
+  mutate(pfas = factor(pfas, levels = c("PFHxA","PFHpA", "PFOA", "PFNA", "PFDcA", "PFUnA", "PFDoA", "PFTriA", "PFOS", "Σ9PFAS"))) %>% group_by(pfas) %>% 
+mutate(
+    n_between_loqs = sum(pfas_value >= loq & pfas_value < max_loq, na.rm = FALSE),
+    n_above_max_loq = sum(pfas_value >= max_loq, na.rm = FALSE),
+    frac_between = 100*(n_between_loqs/(n_above_max_loq+n_between_loqs)),
+    min_loq = min(loq, na.rm = FALSE),
+    max_loq = max(loq, na.rm = FALSE),
+  ) %>% 
+  mutate(Area = factor(Area, levels = c("I","II", "III", "IV", "V")))
+
+between_maxloqloq %>% distinct(pfas, .keep_all = TRUE) %>% 
+  select(
+    pfas, n_between_loqs, n_above_max_loq, frac_between, min_loq, max_loq) %>% ungroup() %>% 
+gt() %>% 
+  # color n_between_loqs by frac_between:
+  data_color(
+    columns = frac_between,
+    fn = scales::col_numeric(
+      palette = "BuPu",
+      domain = c(0, 50)
+    )
+  ) %>% 
+  fmt_number(columns = frac_between,
+             decimals = 0) %>% 
   cols_label(
-    pfas = md("**PFAS**"),
-    n = md("**n > LOQ**"),
-    p = md("**Proportion > LOQ**")
+    pfas = "PFAS",
+    n_between_loqs = "> LOQ & < maxLOQ",
+    n_above_max_loq = "> maxLOQ",
+    frac_between = "% between",
+    min_loq = "min LOQ",
+    max_loq = "max LOQ"
   )
+
+```
+
+```{r loq-plot}
+#| label: loq-plot
+#| tbl-cap: "Overview of PFAS concentrations vs LOQ, with LOQ and maxLOQ indicated in red."
+
+between_maxloqloq %>% 
+  filter(str_detect(pfas, "9PFAS", negate = TRUE)) %>%
+  ggplot(aes(Area, pfas_value, color = frac_between))+
+  geom_jitter(data = . %>% filter(
+    pfas_value > loq & pfas_value < max_loq
+  ), width = 0.2)+
+  geom_jitter(data = . %>% filter(
+    pfas_value > max_loq | pfas_value < loq
+  ), width = 0.2, color = "black", alpha = 0.5)+
+  geom_point(aes(Area, loq), size = 5, color = "red", shape = "_")+
+  geom_hline(aes(yintercept = max_loq), color = "red", linetype = "dotted") + 
+  facet_wrap(~pfas, scales = "free")+
+  scale_color_gradient(low = "white", high = "purple", limits = c(0, 50))+
+    scale_x_discrete(limits = c("I", "II", "III", "IV", "V"))
+
+```
+```{r loq-vs-area}
+between_maxloqloq %>% 
+  filter(str_detect(pfas, "9PFAS", negate = TRUE)) %>%
+  ggplot(aes(latitude, loq, color = Area))+geom_point()+
+  scale_color_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")) +
+  facet_wrap(~pfas)
 ```
 
 
@@ -814,6 +940,76 @@ ggplot(pfas_data_eq0_wide, aes(Mud, TOC)) +
   scale_color_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")) +
   xlab("Mud [%]") +
   ylab("TOC")
+```
+
+## PFAS vs TOC
+
+```{r model-fits-toc}
+pfas_glm_toc <- function(in_dat){
+  glmmTMB(data = in_dat, formula = pfas_value ~ Area + TOC, family = tweedie(link = "log"))
+}
+
+pfas_w_models_toc <-
+  pfas_data_eq0 %>%
+  filter(!(pfas %in% c("PFHxA", "PFDoA", "PFTriA"))) %>%
+  ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
+  # filter(!(Area %in% c("I", "V"))) %>%
+  mutate(
+    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA")),
+    pfas_label = pfas
+  ) %>%
+  arrange(pfas) %>%
+  group_by(pfas) %>%
+  nest() %>%
+  mutate(
+    m_fit = map(data, pfas_glm_toc),
+    tidy = map(m_fit, ~ broom.mixed::tidy(.x, exponentiate = TRUE)),
+    glance = map(m_fit, broom.mixed::glance),
+    augment = map2(m_fit, data, ~ broom.mixed::augment(.x, .y)),
+    pred = map(m_fit, ~ ggpredict(.x, terms = c("TOC [0:6]", "Area"))),
+    simulated = map(m_fit, ~ simulate(.x, nsim = 25, seed = 12345)),
+    sim_data = map2(
+      simulated, data, ~ bind_cols(.x, .y) %>%
+        pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim") %>%
+        rename(group = Area)
+    ),
+    Area_model = map2(m_fit, pfas, ~ glht(.x, linfct = mcp(Area = "Tukey"))),
+    # # validate the parameters:: implementation
+    # Area_hypothesis = map2(m_fit, pfas, ~ glht(.x, linfct = mcp(Area = "Tukey")) %>%
+    #   summary(test = adjusted(type = "single-step")) %>%
+    #   tidy() %>%
+    #   select(-c(term, null.value)) %>%
+    #   mutate(estimate = exp(estimate))),
+    reg_table = map(m_fit, ~ tbl_regression(.x, exponentiate = TRUE, tidy_fun = broom.mixed::tidy), estimate_fun = purrr::partial(style_ratio, digits = 3))
+  )
+
+
+pfas_w_models_toc %>% select(pfas, tidy) %>% unnest(tidy) %>% filter(term == "TOC") %>% select(pfas, term, estimate, p.value)
+```
+
+
+
+```{r model-sim-toc}
+sim_data_toc <- pfas_w_models_toc %>% 
+  unnest(sim_data)
+
+pred_data_toc <- pfas_w_models_toc %>% unnest(pred)
+
+pred_data_toc %>% ggplot(aes(x, predicted)) +
+  geom_smooth(color = "#AF2D2D", se = FALSE) +
+  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+  geom_point(
+    data = sim_data_toc,
+    aes(x = TOC, y = sim),
+    alpha = 0.1,
+    size = 0.2,
+    color = muted("red", l = 50, c = 70)
+  ) +
+  geom_point(aes(x = TOC, y = pfas_value),
+             data = sim_data %>% distinct(sample_id3, .keep_all = TRUE)) +
+  facet_grid(pfas ~ group, scales = "free") +
+  xlab("TOC [%]") +
+  ylab("PFAS [\u03BCg/kg]")
 ```
 
 # Other
@@ -841,5 +1037,94 @@ simtibble %>% ggplot(aes(x = sim)) +
   xlab("Response value")+
   ylab("Frequence #")
 ```
+## Chemical compounds table
 
+```{r}
+pfas_table <- tibble(
+  pfas = c(
+    "PFHxA",
+    "PFHpA",
+    "PFOA",
+    "PFNA",
+    "PFDcA",
+    "PFUnA",
+    "PFDoA",
+    "PFTriA",
+    "PFOS"
+  ),
+  pfas_names = c(
+    "Perfluorohexanoic acid",
+    "Perfluoroheptanoic acid",
+    "Perfluorooctanoic acid",
+    "Perfluorononanoic acid",
+    "Perfluorodecanoic acid",
+    "Perfluoroundecanoic acid",
+    "Perfluorododecanoic acid",
+    "Perfluorotridecanoic acid",
+    "Perfluorooctanesulfonic acid"
+  )
+) %>% 
+  mutate(
+    pc_data = map(pfas_names, ~ pcprop_from_name(.x, property = "all"))
+  ) %>%
+  unnest(pc_data)
+
+```
+
+```{r}
+#| echo: false
+#| eval: false
+pfas_table$CanonicalSMILES %>% map(~.x %>% structure_drawer_smiles(outdir = paste(getwd())))
+
+```
+
+
+
+```{r depiction-drawing}
+pfas_table %>% 
+  mutate(structure_depiction = CanonicalSMILES) %>% 
+  select(pfas, pfas_names, CID, logP = XLogP, structure_depiction) %>% 
+  gt() %>% 
+  text_transform(
+    locations = cells_body(columns = structure_depiction),
+    fn = function(x) {
+      local_image(
+        filename = paste0(getwd(), "/figures/", x, ".svg"),
+        height = 10
+      )
+    }
+  ) %>% gtsave("test2.html")
+```
+
+
+## LogP vs mud coefficient
+
+```{r}
+pfas_w_models %>%
+  select(pfas, m_fit) %>%
+  mutate(regression_table = map(
+    m_fit,
+    ~ model_parameters(.x, exponentiate = TRUE) %>% add_row(
+      Parameter = "(Tweedie power)",
+      Coefficient = glmmTMB:::.tweedie_power(.x)
+    )
+  )) %>%
+  unnest(regression_table) %>%
+  mutate(
+    Parameter = if_else(
+      Component == "dispersion" &
+        Parameter == "(Intercept)",
+      "(Tweedie dispersion)",
+      Parameter
+    )
+  ) %>%
+  select(pfas, Parameter, Estimate = Coefficient, CI_low, CI_high, p) %>% left_join(pfas_table, by = "pfas") %>%
+  filter(Parameter == "Mud") %>%
+  ggplot(aes(x = XLogP, y = Estimate)) + geom_point() +
+  #add geom_text of the pfas for each point:
+  geom_text_repel(aes(label = pfas), ) +
+  geom_errorbar(aes(ymin = CI_low, ymax = CI_high)) +
+  scale_y_continuous(breaks = c(1, 1.01, 1.02, 1.03, 1.04, 1.05))
+
+```
 

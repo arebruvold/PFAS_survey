@@ -45,7 +45,7 @@ options(clustermq.scheduler = "multicore")
 
 # Run the R scripts in the R/ folder with your custom functions:
 # tar_source()
-# source("other_functions.R") # Source other scripts as needed.
+source("pfas_scripts.R") # Source other scripts as needed.
 
 # Replace the target list below with your own:
 list(
@@ -83,5 +83,36 @@ list(
       summarise(
         max_loq = max(loq, na.rm = TRUE)
       )
+  ),
+  tar_target(
+    pfasinfo_pc,
+    tibble(
+      pfas = c(
+        "PFHxA",
+        "PFHpA",
+        "PFOA",
+        "PFNA",
+        "PFDcA",
+        "PFUnA",
+        "PFDoA",
+        "PFTriA",
+        "PFOS"
+      ),
+      pfas_names = c(
+        "Perfluorohexanoic acid",
+        "Perfluoroheptanoic acid",
+        "Perfluorooctanoic acid",
+        "Perfluorononanoic acid",
+        "Perfluorodecanoic acid",
+        "Perfluoroundecanoic acid",
+        "Perfluorododecanoic acid",
+        "Perfluorotridecanoic acid",
+        "Perfluorooctanesulfonic acid"
+      )
+    ) %>% 
+      mutate(
+        pc_data = map(pfas_names, ~ pcprop_from_name(.x, property = "all"))
+      ) %>%
+      unnest(pc_data)
   )
 )
