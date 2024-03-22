@@ -7,3 +7,8 @@ archived*
 *_files/
 *.html
 _targets
+*.pdf
+*.svg
+*.docx
+figures/
+*.lua
