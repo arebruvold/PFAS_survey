@@ -7,6 +7,9 @@ format:
     code-fold: true
     toc: true
 ---
+
+# VESTLAND BRANCH FOR PRESENTATION ONLY! (publication data different branch)
+
 # Todo
 *   Could:
    - Change CI on TOC vs Mud to Gamma, maybe others also.
@@ -226,7 +229,8 @@ loqs <- left_join(
 pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
   select(-analysis_year) %>%
   select(sample_id3, year, Area, longitude, latitude, Mud, TOC, pfas, pfas_value, loq) %>%
-  bind_rows(vestland_raw) %>% 
+  
+  bind_rows(vestland_raw) %>%
   mutate(
     across(c("loq", "pfas_value"), ~ .x %>% round(digits = 6)),
     Area = as_factor(Area)
@@ -597,7 +601,7 @@ library(FactoMineR)
 pca <- pfas_data_eq0_wide %>% select(Mud:"Σ9PFAS") %>%
   select(-"Σ9PFAS", 
          -"PFDoDA", -"PFTrDA"
-         ) %>%
+         ) %>% View()
   prcomp(center = TRUE, scale. = TRUE)
 
 Area_pcatag <- pfas_data_eq0_wide %>% select(Area)
