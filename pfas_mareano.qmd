@@ -9,10 +9,9 @@ format:
 ---
 # Todo
 
--   Tables to docx if needed.
--   Change CI on TOC vs Mud to Gamma, maybe others also.
--   Undersøke prøver mellom prøve-LOQ og høyeste LOQ, Stepan mener vurdere bruke invididuell LOQ.
--   Se stepan mail og rette.
+* Could
+    - Change CI on TOC vs Mud to Gamma, maybe others also.
+  
 
 # Data cleaning
 ```{r setup-cleaning}
@@ -50,6 +49,30 @@ survey_theme <- theme_few()
 theme_set(survey_theme)
 
 source("pfas_scripts.R")
+
+
+## for renaming pfas compounds with inconsequential naming
+pfas_renamer <- function(pfas_in) {
+  str_replace_all(
+    pfas_in,
+    c(
+      "_a" = "_da",
+      "pf_dc_da" = "PFDA",
+      "pf_tri_da" = "PFTrDA",
+      "pfos$" = "PFOS",
+      "pfda" = "PFDA",
+      "pfna" = "PFNA",
+      "pf_hx_da" = "PFHxDA",
+      "pf_hp_da" = "PFHpDA",
+      "pfoa" = "PFOA",
+      "pf_un_da" = "PFUnDA",
+      "pf_do_da" = "PFDoDA",
+      "pf_tr_da" = "PFTrDA",
+      "s9_pfas" = "Σ9PFAS",
+      "sum_9_pfas" = "Σ9PFAS"
+    )
+  )
+}
 
 ## for renaming sample ids to fix inconsistencies
 mareano_renamer <- function(ss_in) {
@@ -137,7 +160,8 @@ dataset <- read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>%
   pivot_longer(
     cols = pfos:s9_pfas, names_to = "pfas", values_to = "pfas_value"
   ) %>%
-  mutate(sample_id3 = mareano_renamer(sample_id3))
+  mutate(sample_id3 = mareano_renamer(sample_id3),
+         pfas = pfas_renamer(pfas))
 
 # import curated LOQs
 loqs_raw <- read_excel("data/LOQs.xlsx") %>%
@@ -172,48 +196,41 @@ loqs_samples <- loqs_raw %>%
 loqs <- left_join(
   loqs_years, loqs_samples,
   by = c("analysis_year")
-)
+) %>% 
+  mutate(loq = if_else(sample_id == "R3032BX001" & pfas == "pf_hp_a", 0.05, loq),
+         pfas = pfas_renamer(pfas))
 
 # merge data, assign values below LOQ
 pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
   select(-analysis_year) %>%
-  select(sample_id3, year, Area, longitude, latitude, Mud, TOC, pfas, pfas_value, loq)
+  select(sample_id3, year, Area, longitude, latitude, Mud, TOC, pfas, pfas_value, loq) %>%
+  mutate(
+    # to avoid floating point problems using ><=
+    across(c("loq", "pfas_value"), ~ .x %>% round(digits = 6)),
+    Area = as_factor(Area)
+  )
   
 pfas_data_eq0 <- pfas_raw %>%
   group_by(pfas) %>%
-  mutate(max_loq = max(loq, na.rm = TRUE)) %>%
+mutate(max_loq = max(loq %>% replace_na(0), na.rm = TRUE)) %>% 
   mutate(
     pfas_value = case_when(
       pfas_value < max_loq ~ 0,
+      pfas_value %>% is.na ~ 0,
       TRUE ~ pfas_value
     )
   ) %>%
   ungroup() %>%
   group_by(sample_id3) %>%
-  mutate(
+  select(-max_loq) %>%
+  mutate(pfas = factor(pfas, levels = c("PFHxDA", "PFHpDA", "PFOA", "PFNA", "PFDA", "PFUnDA", "PFDoDA", "PFTrDA", "PFOS", "Σ9PFAS"))) %>%
+    mutate(
     pfas_value = if_else(
-      pfas == "s9_pfas",
-      sum(pfas_value[pfas != "s9_pfas"], na.rm = TRUE),
+      pfas == "Σ9PFAS",
+      sum(pfas_value[pfas != "Σ9PFAS"], na.rm = TRUE),
       pfas_value
     )
-  ) %>%
-  select(-max_loq) %>% 
-  mutate(
-    pfas = case_when(
-      pfas == "s9_pfas" ~ "Σ9PFAS",
-      pfas == "pfos" ~ "PFOS",
-      pfas == "pfoa" ~ "PFOA",
-      pfas == "pfna" ~ "PFNA",
-      pfas == "pf_un_a" ~ "PFUnA",
-      pfas == "pf_hx_a" ~ "PFHxA",
-      pfas == "pf_hp_a" ~ "PFHpA",
-      pfas == "pf_dc_a" ~ "PFDcA",
-      pfas == "pf_do_a" ~ "PFDoA",
-      pfas == "pf_tri_a" ~ "PFTriA",
-      TRUE ~ NA_character_
-    )
-  ) %>% 
-  mutate(pfas = factor(pfas, levels = c("PFHxA","PFHpA", "PFOA", "PFNA", "PFDcA", "PFUnA", "PFDoA", "PFTriA", "PFOS", "Σ9PFAS")))
+  )
 
 pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
 
@@ -236,11 +253,11 @@ pfas_glm <- function(in_dat){
 
 pfas_w_models <-
   pfas_data_eq0 %>%
-  filter(!(pfas %in% c("PFHxA", "PFDoA", "PFTriA"))) %>%
+  filter((pfas %in% c("PFOS", "PFOA", "PFNA", "PFUnDA", "Σ9PFAS"))) %>%
   ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
   # filter(!(Area %in% c("I", "V"))) %>%
   mutate(
-    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA")),
+    pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA")),
     pfas_label = pfas
   ) %>%
   arrange(pfas) %>%
@@ -296,6 +313,8 @@ Shown are the model fits on the original scale, with observations shown by black
 
 ```{r dharma-validation}
 #| layout-ncol: 2
+#| fig-format: png
+
 # dharma_printer <- function(mod, in_dat) {
 #   sim_resid <- simulateResiduals(fittedModel = mod, n = 1000)
 #   pfas_name <- in_dat$pfas_label[1]
@@ -362,9 +381,9 @@ pfas_data_eq0_wide %>%
   group_by(Area) %>%
   # mean, sd for each Area for each of Σ9PFAS, TOC, Mud:
   summarise(
-  across(Mud:Σ9PFAS, mean, na.rm = TRUE),
+    across(Mud:Σ9PFAS, mean, na.rm = TRUE),
     n = n()
-  ) %>% 
+  ) %>%
   gt() %>%
   fmt_number(columns = 2:13, decimals = 1) %>%
   tab_spanner(label = "Mean", columns = 2:13) %>%
@@ -373,18 +392,19 @@ pfas_data_eq0_wide %>%
     Area = md("**Area**"),
     n = md("**n**"),
     Σ9PFAS = md("**\u03A39PFAS**"),
-    PFHxA = md("**PFHxA**"),
-    PFHpA = md("**PFHpA**"),
-    PFDcA = md("**PFDcA**"),
+    PFHxDA = md("**PFHxDA**"),
+    PFHpDA = md("**PFHpdA**"),
+    PFDA = md("**PFDA**"),
     PFOS = md("**PFOS**"),
     PFOA = md("**PFOA**"),
     PFNA = md("**PFNA**"),
-    PFTriA = md("**PFTriA**"),
-    PFDoA = md("**PFDoA**"),
-    PFUnA = md("**PFUnA**"),
+    PFTrDA = md("**PFTrDA**"),
+    PFDoDA = md("**PFDoDA**"),
+    PFUnDA = md("**PFUnDA**"),
     TOC = md("**TOC**"),
     Mud = md("**Mud**")
   )
+
 ```
 
 ```{r}
@@ -392,41 +412,43 @@ pfas_data_eq0_wide %>%
 pfas_ratios <- pfas_data_eq0_wide %>%
   mutate(
     "PFOA_to_PFNA" = if_else(PFOA == 0 | PFNA == 0, NA, PFOA / PFNA),
-    "PFDcA_to_PFUnA" = if_else(PFDcA == 0 | PFUnA == 0, NA, PFDcA / PFUnA)
+    "PFDA_to_PFUnDA" = if_else(PFDA == 0 | PFUnDA == 0, NA, PFDA / PFUnDA)
   ) %>%
-  select("PFOA_to_PFNA", "PFDcA_to_PFUnA",PFOA, PFNA, PFDcA, PFUnA, sample_id3:TOC) %>%
+  select("PFOA_to_PFNA", "PFDA_to_PFUnDA", PFOA, PFNA, PFDA, PFUnDA, sample_id3:TOC) %>%
   pivot_longer(
-    cols = c("PFOA_to_PFNA", "PFDcA_to_PFUnA"),
+    cols = c("PFOA_to_PFNA", "PFDA_to_PFUnDA"),
     names_to = "pfas",
     values_to = "Ratio"
-  ) %>% mutate(c1 = if_else(pfas == "PFOA_to_PFNA", PFOA, PFDcA),
-               c2 = if_else(pfas == "PFOA_to_PFNA", PFNA, PFUnA)
+  ) %>% mutate(c1 = if_else(pfas == "PFOA_to_PFNA", PFOA, PFDA),
+               c2 = if_else(pfas == "PFOA_to_PFNA", PFNA, PFUnDA)
   ) %>% 
   mutate(pfas = case_when(
-      pfas == "PFOA_to_PFNA" ~ "PFOA / PFNA",
-      pfas == "PFDcA_to_PFUnA" ~ "PFDcA / PFUnA"
+      pfas == "PFOA_to_PFNA" ~ "PFOA : PFNA",
+      pfas == "PFDA_to_PFUnDA" ~ "PFDA : PFUnDA"
     )
   )
   
   pfas_ratios %>% 
   ggplot(aes(Area, Ratio)) +
-  geom_jitter(width = 0.2, size = 3) +
+  geom_jitter(aes(fill = Area), width = 0.2, size = 3, colour = "black", shape = 21) +
   # mean for each Area using stat summary:
   stat_summary(aes(group = 1),
     fun = mean, geom = "line",
     linetype = "dotted",
     size = 0.5, fill = "black"
   ) +
-    scale_color_viridis(option = "magma") +
-  scale_fill_viridis(option = "magma")+
+    scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
+  #   scale_color_viridis(option = "magma") +
+  # scale_fill_viridis(option = "magma")+
   stat_summary(geom = "errorbar", fun.data = mean_cl_normal, fun.args = list(conf.int = 0.95), size = 0.7, width = 0.5) +
   xlab("Area") +
+  guides(fill = FALSE) +
   facet_wrap(~pfas, scales = "free")
   
   pfas_ratios %>% group_by(Area, pfas) %>% summarise( mean =  mean(Ratio, na.rm = T)) %>% 
     mutate(pfas = case_when(
-      pfas == "PFOA_to_PFNA" ~ "PFOA / PFNA",
-      pfas == "PFDcA_to_PFUnA" ~ "PFDcA / PFUnA"
+      pfas == "PFOA_to_PFNA" ~ "PFOA : PFNA",
+      pfas == "PFDA_to_PFUnDA" ~ "PFDA : PFUnDA"
     )) %>% 
     pivot_wider(
       names_from = Area,
@@ -443,11 +465,12 @@ pfas_ratios <- pfas_data_eq0_wide %>%
 outlier_cand <- pfas_data_eq0_wide %>%
     mutate(
         PFOA_to_PFNA = if_else(PFOA == 0 | PFNA == 0, NA, PFOA / PFNA),
-        PFDcA_to_PFUnA = if_else(PFDcA == 0 | PFUnA == 0, NA, PFDcA / PFUnA)
+        PFDA_to_PFUnDA = if_else(PFDA == 0 | PFUnDA == 0, NA, PFDA / PFUnDA)
     ) %>%
-  filter(PFOA_to_PFNA > 3 | PFDcA_to_PFUnA < 0.3)
+  filter(PFOA_to_PFNA > 3 | PFDA_to_PFUnDA < 0.3)
 
-outlier_cand %>% gt() %>% fmt_number(columns = longitude:PFDcA_to_PFUnA)
+outlier_cand %>% gt() %>% fmt_number(columns = longitude:PFDA_to_PFUnDA)
+
 
 library(leaflet)
 library(leafem)
@@ -459,8 +482,8 @@ leaflet(outlier_cand) %>%
                    lat = ~latitude,
                    radius = 2,
                    popup = ~ paste(
-                     "PFDcA_to_PFUnA :",
-                     PFDcA_to_PFUnA,
+                     "PFDA_to_PFUnDA :",
+                     PFDA_to_PFUnDA,
                      "<br>",
                      "PFOA_to_PFNA :",
                      PFOA_to_PFNA,
@@ -471,8 +494,8 @@ leaflet(outlier_cand) %>%
    lng = ~longitude,
                    lat = ~latitude,
                    label = ~ paste(
-                     "PFDcA_to_PFUnA :",
-                     PFDcA_to_PFUnA %>% round(digits = 1),
+                     "PFDA_to_PFUnDA :",
+                     PFDA_to_PFUnDA %>% round(digits = 1),
                      "//",
                      "PFOA_to_PFNA :",
                      PFOA_to_PFNA %>% round(digits = 1),
@@ -503,7 +526,7 @@ pfas_prop <- pfas_data_eq0 %>%
   filter(pfas != "Σ9PFAS")
 
 ggplot(pfas_prop, aes(fill = pfas, y = pfas_prop, x = Area)) +
-  geom_bar(position = "stack", stat = "identity", width = 0.88) +
+  geom_bar(position = "stack", stat = "identity", width = 0.88, color = "black") +
   scale_fill_brewer(palette = "Set3") +
   xlab("Area") +
   ylab("Propotion") +
@@ -517,12 +540,14 @@ ggplot(pfas_prop, aes(fill = pfas, y = pfas_prop, x = Area)) +
 pred_data %>%
   filter(pfas == "Σ9PFAS") %>%
   ggplot(aes(x, predicted)) +
-  geom_smooth(color = "#AF2D2D") +
-  geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
-  geom_point(aes(x = Mud, y = pfas_value),
+  geom_point(aes(x = Mud, y = pfas_value, fill = group), color = "black", shape = 21,
     data = sim_data %>% filter(pfas == "Σ9PFAS") %>% distinct(sample_id3, .keep_all = TRUE)
-  ) +
+  ) + 
+geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
+    geom_smooth(color = "#AF2D2D") +
+  scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
   facet_wrap(~ group) +
+  guides(color = FALSE, size = FALSE, fill = FALSE)+
   xlab("Mud [%]") +
   ylab("\u03A39PFAS [\u03BCg/kg]")
 ```
@@ -532,12 +557,14 @@ pred_data %>%
 pred_data %>%
   filter(pfas != "Σ9PFAS") %>%
   ggplot(aes(x, predicted)) +
-  geom_smooth(color = "#AF2D2D") +
   geom_ribbon(aes(ymin = conf.low, ymax = conf.high), alpha = 0.2) +
-  geom_point(aes(x = Mud, y = pfas_value),
+  geom_point(aes(x = Mud, y = pfas_value, fill = group), color = "black", shape = 21,
     data = sim_data %>% filter(pfas != "Σ9PFAS") %>% distinct(sample_id3, .keep_all = TRUE)
   ) +
+  geom_smooth(color = "#AF2D2D") +
+    scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
   facet_grid(pfas ~ group, scales = "free") +
+  guides(fill = FALSE)+
   xlab("Mud [%]") +
   ylab("[\u03BCg/kg]")
 ```
@@ -549,7 +576,7 @@ library(FactoMineR)
 # apply PCA
 pca <- pfas_data_eq0_wide %>% select(Mud:"Σ9PFAS") %>%
   select(-"Σ9PFAS", 
-         -"PFDoA", -"PFTriA"
+         -"PFDoDA", -"PFTrDA"
          ) %>%
   prcomp(center = TRUE, scale. = TRUE)
 
@@ -639,11 +666,19 @@ Areas_table %>%
 * For Σ9PFAS, no p-values are significant, indicating that no clear differences between Areas are observed.
 * However, for individual compounds some differences are observed:
   - For PFOS, there are differences between Area V versus I, II and IV.
-  - For PFUnA, there are differences between V versus I, II and IV.
+  - For PFUnDA, there are differences between V versus I, II and IV.
 * Overall, differences are driven by Areas I and V. This is further shown by residual plots below.
 
-Due to a low number of observations above LOQ as shown in @tbl-above-loq, it is likely not meaningful to compare differences between levels for other substances than Σ9PFAS, PFOS, PFOA and PFNA.
+```{r}
+model_preds <-
+  map2(pfas_w_models$m_fit, pfas_w_models$pfas, ~ {
+    mud_percent <- 71
+    predict_response(.x, terms = "Area", condition = c("Mud" = mud_percent)) %>% plot() + ylab("Predicted") + theme_bw(base_size = 12) + labs(title = NULL, subtitle = paste(.y, " | Mud% = ", mud_percent))
+    # ggsave(paste0(.y, "_", mud_percent, ".pdf"))
+  })
+wrap_plots(model_preds)
 
+```
 
 ## Latitude hypothesis
 
@@ -657,11 +692,11 @@ pfas_glm <- function(in_dat){
 
 Area_wmodels <-
   pfas_data_eq0 %>%
-  filter(!(pfas %in% c("PFHxA", "PFDoA", "PFTriA"))) %>%
+  filter(!(pfas %in% c("PFHxDA", "PFDoDA", "PFTrDA"))) %>%
   ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
   # filter(!(Area %in% c("I", "V"))) %>%
   mutate(
-    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA")),
+    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA")),
     pfas_label = pfas
   ) %>%
   arrange(pfas) %>%
@@ -685,11 +720,12 @@ Area_wmodels <-
 Area_wmodels %>%
   unnest(augment) %>%
   ggplot(aes(x = latitude, y = .resid)) +
-  geom_point(aes(color = Area)) +
+  geom_point(aes(fill = Area), shape = 21, color = "black") +
   geom_smooth(color = "#AF2D2D") +
-  # set colour palette to: c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")
-  scale_color_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")) +
+  scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")) +
   facet_wrap(~pfas, scale = "free")+
+  scale_x_reverse() +
+  ylab("Residuals")+
   xlab("Latitude")
 
 # test colours:
@@ -721,11 +757,11 @@ pfas_glm <- function(in_dat) {
 
 Arealat_wmodels <-
   pfas_data_eq0 %>%
-  filter(!(pfas %in% c("PFHxA", "PFDoA", "PFTriA"))) %>%
+  filter(!(pfas %in% c("PFHxDA", "PFDoDA", "PFTrDA"))) %>%
   ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
   # filter(!(Area %in% c("I", "V"))) %>%
   mutate(
-    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA", "PFDcA","PFHpA" )),
+    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA", "PFDA","PFHpA" )),
     pfas_label = pfas
   ) %>%
   arrange(pfas) %>%
@@ -745,8 +781,11 @@ Arealat_wmodels <-
     reg_table = map(m_fit, ~ tbl_regression(.x, exponentiate = TRUE, tidy_fun = broom.mixed::tidy), estimate_fun = purrr::partial(style_ratio, digits = 3))
   )
 
-tbl_merge((Arealat_wmodels %>% 
-    filter(pfas %in% c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA", "PFDcA","PFHpA")))$reg_table, tab_spanner = c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA", "PFDcA","PFHpA")) %>% as_gt()
+tbl_merge(
+  (Arealat_wmodels %>% 
+    filter(pfas %in% c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA", "PFDA","PFHpDA")))$reg_table,
+    tab_spanner =  Area_wmodels %>% pull(pfas) %>% as.character()
+    ) %>% as_gt()
 
   
 ```
@@ -761,7 +800,7 @@ Applying the model with covariates 'C~{PFAS}~ = Mud + latitude', yields the sign
 #| out-width: 100%
 ggpairs(pfas_data_eq0_wide %>% 
           select(
-            Area, Mud, TOC, Σ9PFAS, PFOS, PFOA, PFNA, PFUnA, PFDcA, PFHpA
+Area, Mud, TOC, Σ9PFAS, PFOS, PFOA, PFNA, PFUnDA, PFDA, PFHpDA
           ),
         progress = FALSE)
 ```
@@ -793,8 +832,12 @@ pfas_w_models %>%
     locations = cells_row_groups(groups = everything())
   ) %>%
   tab_header(title = "Regression table", subtitle = "Model coefficients exponentiated, whereas tweedie parameters are not.")
+
 ## other reg table implementation
-# tbl_merge(pfas_w_models$reg_table, tab_spanner = c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA")) %>% as_gt()
+tbl_merge(
+  (pfas_w_models)$reg_table,
+    tab_spanner =  pfas_w_models %>% pull(pfas) %>% as.character()
+    ) %>% as_gt()
 ```
 
 ## Observations above LOQ
@@ -830,7 +873,6 @@ pfas_w_models %>%
 ```{r between-maxloq-loq}
 #| label: tbl-between-loq
 #| tbl-cap: "Samples and fraction above the different LOQs for each PFAS."
-
 between_maxloqloq <- pfas_raw %>%
   group_by(pfas) %>%
   mutate(max_loq = max(loq, na.rm = TRUE)) %>%
@@ -838,28 +880,17 @@ between_maxloqloq <- pfas_raw %>%
   group_by(sample_id3) %>%
   mutate(
     pfas_value = if_else(
-      pfas == "s9_pfas",
-      sum(pfas_value[pfas != "s9_pfas"], na.rm = TRUE),
+      pfas == "Σ9PFAS",
+      sum(pfas_value[pfas != "Σ9PFAS"], na.rm = TRUE),
       pfas_value
     )
   ) %>%
   mutate(
-    pfas = case_when(
-      pfas == "s9_pfas" ~ "Σ9PFAS",
-      pfas == "pfos" ~ "PFOS",
-      pfas == "pfoa" ~ "PFOA",
-      pfas == "pfna" ~ "PFNA",
-      pfas == "pf_un_a" ~ "PFUnA",
-      pfas == "pf_hx_a" ~ "PFHxA",
-      pfas == "pf_hp_a" ~ "PFHpA",
-      pfas == "pf_dc_a" ~ "PFDcA",
-      pfas == "pf_do_a" ~ "PFDoA",
-      pfas == "pf_tri_a" ~ "PFTriA",
-      TRUE ~ NA_character_
-    )
-  ) %>% 
-  mutate(pfas = factor(pfas, levels = c("PFHxA","PFHpA", "PFOA", "PFNA", "PFDcA", "PFUnA", "PFDoA", "PFTriA", "PFOS", "Σ9PFAS"))) %>% group_by(pfas) %>% 
+    pfas = pfas_renamer(pfas)
+  ) %>%
+  mutate(pfas = factor(pfas, levels = c("PFHxDA","PFHpDA", "PFOA", "PFNA", "PFDA", "PFUnDA", "PFDoDA", "PFTrDA", "PFOS", "Σ9PFAS"))) %>% group_by(pfas) %>% 
 mutate(
+    n_above_loq =  sum(pfas_value >= loq, na.rm = FALSE),
     n_between_loqs = sum(pfas_value >= loq & pfas_value < max_loq, na.rm = FALSE),
     n_above_max_loq = sum(pfas_value >= max_loq, na.rm = FALSE),
     frac_between = 100*(n_between_loqs/(n_above_max_loq+n_between_loqs)),
@@ -868,9 +899,9 @@ mutate(
   ) %>% 
   mutate(Area = factor(Area, levels = c("I","II", "III", "IV", "V")))
 
-between_maxloqloq %>% distinct(pfas, .keep_all = TRUE) %>% 
+between_maxloqloq %>% distinct(pfas, .keep_all = TRUE) %>%
   select(
-    pfas, n_between_loqs, n_above_max_loq, frac_between, min_loq, max_loq) %>% ungroup() %>% 
+    pfas, n_above_loq, n_between_loqs, n_above_max_loq, frac_between, min_loq, max_loq) %>% ungroup() %>% 
 gt() %>% 
   # color n_between_loqs by frac_between:
   data_color(
@@ -884,13 +915,13 @@ gt() %>%
              decimals = 0) %>% 
   cols_label(
     pfas = "PFAS",
+    n_above_loq = "> LOQ",
     n_between_loqs = "> LOQ & < maxLOQ",
     n_above_max_loq = "> maxLOQ",
     frac_between = "% between",
     min_loq = "min LOQ",
     max_loq = "max LOQ"
-  )
-
+  ) %>% gtsave("tableDL.html")
 ```
 
 ```{r loq-plot}
@@ -943,18 +974,19 @@ ggplot(pfas_data_eq0_wide, aes(Mud, TOC)) +
 
 ## PFAS vs TOC
 
+
 ```{r model-fits-toc}
+
 pfas_glm_toc <- function(in_dat){
   glmmTMB(data = in_dat, formula = pfas_value ~ Area + TOC, family = tweedie(link = "log"))
 }
 
-pfas_w_models_toc <-
-  pfas_data_eq0 %>%
-  filter(!(pfas %in% c("PFHxA", "PFDoA", "PFTriA"))) %>%
+pfas_w_models_toc <- pfas_data_eq0 %>%
+  filter(!(pfas %in% c("PFHxDA", "PFDoDA", "PFTrDA"))) %>%
   ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
   # filter(!(Area %in% c("I", "V"))) %>%
   mutate(
-    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnA")),
+    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA")),
     pfas_label = pfas
   ) %>%
   arrange(pfas) %>%
@@ -982,14 +1014,13 @@ pfas_w_models_toc <-
     reg_table = map(m_fit, ~ tbl_regression(.x, exponentiate = TRUE, tidy_fun = broom.mixed::tidy), estimate_fun = purrr::partial(style_ratio, digits = 3))
   )
 
-
 pfas_w_models_toc %>% select(pfas, tidy) %>% unnest(tidy) %>% filter(term == "TOC") %>% select(pfas, term, estimate, p.value)
 ```
 
 
-
 ```{r model-sim-toc}
-sim_data_toc <- pfas_w_models_toc %>% 
+
+sim_data_toc <- pfas_w_models_toc %>%
   unnest(sim_data)
 
 pred_data_toc <- pfas_w_models_toc %>% unnest(pred)
@@ -1011,6 +1042,8 @@ pred_data_toc %>% ggplot(aes(x, predicted)) +
   ylab("PFAS [\u03BCg/kg]")
 ```
 
+
+
 # Other
 
 ## Tweedie distribution
@@ -1022,13 +1055,11 @@ pred_data_toc %>% ggplot(aes(x, predicted)) +
 mutibble <- rbind(tibble(mu = c(rep(1, 10000))), tibble(mu = c(rep(2, 10000))), tibble(mu = c(rep(3, 10000)))) %>% 
   mutate(
   )
-
 simtibble <- mutibble %>%
   mutate(
     sim = rTweedie(mu = mu, p = 1.404, 0.666),
     mu = str_replace(mu, "\\d", paste("\u03BC = ", mu))
   )
-
 simtibble %>% ggplot(aes(x = sim)) +
   geom_histogram(binwidth = 0.05, color = "black") +
   facet_wrap(~mu)+
@@ -1037,7 +1068,6 @@ simtibble %>% ggplot(aes(x = sim)) +
   ylab("Frequence #")
 ```
 ## Chemical compounds table
-
 ```{r}
 pfas_table <- tibble(
   pfas = c(
@@ -1045,10 +1075,10 @@ pfas_table <- tibble(
     "PFHpA",
     "PFOA",
     "PFNA",
-    "PFDcA",
-    "PFUnA",
-    "PFDoA",
-    "PFTriA",
+    "PFDA",
+    "PFUnDA",
+    "PFDoDA",
+    "PFTrA",
     "PFOS"
   ),
   pfas_names = c(
@@ -1067,17 +1097,13 @@ pfas_table <- tibble(
     pc_data = map(pfas_names, ~ pcprop_from_name(.x, property = "all"))
   ) %>%
   unnest(pc_data)
-
 ```
 
 ```{r}
 #| echo: false
 #| eval: false
 pfas_table$CanonicalSMILES %>% map(~.x %>% structure_drawer_smiles(outdir = paste(getwd())))
-
 ```
-
-
 
 ```{r depiction-drawing}
 pfas_table %>% 
@@ -1089,15 +1115,16 @@ pfas_table %>%
     fn = function(x) {
       local_image(
         filename = paste0(getwd(), "/figures/", x, ".svg"),
-        height = 10
+        height = 60
       )
     }
   ) %>% gtsave("test2.html")
+# # rsvg convert
+# library(rsvg)
+# list.files("figures/", full.names = TRUE) %>% str_subset(".svg") %>% map(~ rsvg_pdf(.x, paste0(.x %>% str_replace(".svg", ".pdf"))))
 ```
 
-
 ## LogP vs mud coefficient
-
 ```{r}
 pfas_w_models %>%
   select(pfas, m_fit) %>%
@@ -1124,6 +1151,4 @@ pfas_w_models %>%
   geom_text_repel(aes(label = pfas), ) +
   geom_errorbar(aes(ymin = CI_low, ymax = CI_high)) +
   scale_y_continuous(breaks = c(1, 1.01, 1.02, 1.03, 1.04, 1.05))
-
 ```
-
