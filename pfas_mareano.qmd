@@ -8,8 +8,7 @@ format:
     toc: true
 ---
 # Todo
--   Finalize chemical properties table.
-      - "name, structure, LogP, RT, m/z (or Mwt), chemical formula, and confidence level + class"
+
 -   Tables to docx if needed.
 -   Change CI on TOC vs Mud to Gamma, maybe others also.
 -   Undersøke prøver mellom prøve-LOQ og høyeste LOQ, Stepan mener vurdere bruke invididuell LOQ.
