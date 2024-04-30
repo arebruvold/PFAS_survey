@@ -8,7 +8,7 @@ format:
     toc: true
 ---
 
-# VESTLAND BRANCH FOR PRESENTATION ONLY! (publication data different branch)
+# VESTLAND BRANCH FOR PRESENTATION ONLY! (publication in master branch)
 
 # Todo
 *   Could:
