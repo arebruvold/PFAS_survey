@@ -9,6 +9,7 @@ format:
 ---
 # Todo
 
+* Fix names in paper vs figures.
 * Could
     - Change CI on TOC vs Mud to Gamma, maybe others also.
   
@@ -843,31 +844,31 @@ tbl_merge(
 ## Observations above LOQ
 
 ```{r}
-# #| label: tbl-above-loq
-# #| tbl-cap: "Number of observations above LOQ for each PFAS out of 95 sampled locations.."
-# pfas_data_eq0 %>% 
-#   filter(pfas != "Σ9PFAS") %>% 
-#   group_by(pfas) %>%
-#   mutate(max_loq = max(loq, na.rm = TRUE)) %>% #distinct(pfas, max_loq) %>%  View()
-#   summarise(
-#     n = sum(pfas_value > max_loq),
-#     n_samples = n_distinct(sample_id3)
-#   ) %>%
-#   mutate(
-#     p = n / n_samples
-#   ) %>% arrange(desc(p)) %>%
-#   select(-n_samples) %>%
-#   gt() %>%
-#   fmt_percent(columns = vars(p), decimals = 0) %>%
-#   # tab_header(
-#   #   title = md("Number of samples above LOQ"),
-#   #   subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
-#   # ) %>%
-#   cols_label(
-#     pfas = md("**PFAS**"),
-#     n = md("**n > LOQ**"),
-#     p = md("**Proportion > LOQ**")
-#   )
+#| label: tbl-above-loq
+#| tbl-cap: "Number of observations above LOQ for each PFAS out of 95 sampled locations.."
+pfas_data_eq0 %>%
+  filter(pfas != "Σ9PFAS") %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq, na.rm = TRUE)) %>% #distinct(pfas, max_loq) %>%  View()
+  summarise(
+    n = sum(pfas_value > max_loq),
+    n_samples = n_distinct(sample_id3)
+  ) %>%
+  mutate(
+    p = n / n_samples
+  ) %>% arrange(desc(p)) %>%
+  select(-n_samples) %>%
+  gt() %>%
+  fmt_percent(columns = vars(p), decimals = 0) %>%
+  # tab_header(
+  #   title = md("Number of samples above LOQ"),
+  #   subtitle = md("Number of samples above LOQ for each PFAS, and the proportion of samples above LOQ.")
+  # ) %>%
+  cols_label(
+    pfas = md("**PFAS**"),
+    n = md("**n > LOQ**"),
+    p = md("**Proportion > LOQ**")
+  )
 ```
 
 ```{r between-maxloq-loq}
@@ -1042,7 +1043,21 @@ pred_data_toc %>% ggplot(aes(x, predicted)) +
   ylab("PFAS [\u03BCg/kg]")
 ```
 
+## Concentrations table
 
+```{r}
+pfas_data_eq0_wide %>% select(-sample_id3, -TOC) %>% gt(groupname_col = "Area",rowname_col = "year") %>%
+  fmt_number(columns = 3:15, n_sigfig = 2) %>%
+  fmt_number(columns = longitude:latitude, n_sigfig = 5) %>% 
+  cols_label(
+    longitude = md("Longitude"),
+    latitude = md("Latitude")
+) %>% tab_spanner(label = "Concentration [µg/kg dry weight]", columns = "PFOS":"Σ9PFAS") %>% 
+  gtsave("si_conc_table.docx")
+
+```
+
+Concentrations 
 
 # Other
 
