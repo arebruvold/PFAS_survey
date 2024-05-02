@@ -1046,18 +1046,24 @@ pred_data_toc %>% ggplot(aes(x, predicted)) +
 ## Concentrations table
 
 ```{r}
-pfas_data_eq0_wide %>% select(-sample_id3, -TOC) %>% gt(groupname_col = "Area",rowname_col = "year") %>%
-  fmt_number(columns = 3:15, n_sigfig = 2) %>%
-  fmt_number(columns = longitude:latitude, n_sigfig = 5) %>% 
+pfas_data_eq0_wide %>% select(-sample_id3) %>% gt(groupname_col = "Area",rowname_col = "year") %>%
+  fmt_number(columns = 3:16, decimals = 2) %>%
+  fmt_number(columns = longitude:latitude, decimals = 2) %>% 
   cols_label(
     longitude = md("Longitude"),
     latitude = md("Latitude")
 ) %>% tab_spanner(label = "Concentration [µg/kg dry weight]", columns = "PFOS":"Σ9PFAS") %>% 
+  sub_values(
+  columns = everything(),
+  rows = everything(),
+  values = 0,
+  replacement = "-"
+) %>% 
   gtsave("si_conc_table.docx")
 
 ```
 
-Concentrations 
+Concentrations and Mud % for each PFAS by area and year. The highest LOQ in any sample for each PFAS is used, values below LOQ indicated with a dash.  
 
 # Other
 
