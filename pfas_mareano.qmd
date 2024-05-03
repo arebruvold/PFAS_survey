@@ -112,7 +112,6 @@ mareano_renamer <- function(ss_in) {
   return(ss_out)
 }
 
-
 # to fix shifted column names
 newnames <- (read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>% clean_names())[1, 16:29] %>% as_vector()
 
@@ -130,7 +129,7 @@ dataset <- read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>%
     to_cm_o = x6,
     longitude = dde,
     latitude = ddn,
-    depth_m = mbsl,
+    depth = mbsl,
     sample_id2 = x1096mc002,
     sample_id3 = sample_2,
     from_cm_i = sample_interval_top_bottom_12,
@@ -162,7 +161,19 @@ dataset <- read_excel("data/Hele datasettet v2_corr.xlsx", skip = 178) %>%
     cols = pfos:s9_pfas, names_to = "pfas", values_to = "pfas_value"
   ) %>%
   mutate(sample_id3 = mareano_renamer(sample_id3),
-         pfas = pfas_renamer(pfas))
+         pfas = pfas_renamer(pfas)) %>% 
+  mutate(depth = case_when(
+    sample_id3 == "R3165BX009" ~ 166,
+    sample_id3 == "R3184BX013" ~ 277,
+    sample_id3 == "R3105BX004" ~ 374,
+    sample_id3 == "R3032BX001" ~ 419,
+    sample_id3 == "R3004BX004" ~ 416,
+    sample_id3 == "R2969BX003" ~ 855,
+    sample_id3 == "R2924BX002" ~ 866,
+    sample_id3 == "R1843BX038" ~ 277,
+    TRUE ~ depth
+),
+depth = abs(depth) %>% round(digits = 0))
 
 # import curated LOQs
 loqs_raw <- read_excel("data/LOQs.xlsx") %>%
@@ -204,7 +215,7 @@ loqs <- left_join(
 # merge data, assign values below LOQ
 pfas_raw <- left_join(dataset, loqs, by = c("pfas", "sample_id3" = "sample_id")) %>%
   select(-analysis_year) %>%
-  select(sample_id3, year, Area, longitude, latitude, Mud, TOC, pfas, pfas_value, loq) %>%
+  select(sample_id3, year, Area, longitude, latitude, Mud, TOC, pfas, pfas_value, loq, depth) %>%
   mutate(
     # to avoid floating point problems using ><=
     across(c("loq", "pfas_value"), ~ .x %>% round(digits = 6)),
@@ -234,6 +245,33 @@ mutate(max_loq = max(loq %>% replace_na(0), na.rm = TRUE)) %>%
   )
 
 pfas_data_eq0_wide <- pivot_wider(pfas_data_eq0 %>% select(-c(loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
+
+## Using individual sample LOQs
+pfas_data_0 <- pfas_raw %>%
+  group_by(pfas) %>%
+  mutate(max_loq = max(loq %>% replace_na(0), na.rm = TRUE)) %>% 
+  mutate(
+    pfas_value = case_when(
+      pfas_value < loq ~ 0,
+      pfas_value %>% is.na ~ 0,
+      TRUE ~ pfas_value
+    )
+  ) %>%
+  ungroup() %>%
+  group_by(sample_id3) %>%
+  mutate(pfas = factor(pfas, levels = c("PFHxDA", "PFHpDA", "PFOA", "PFNA", "PFDA", "PFUnDA", "PFDoDA", "PFTrDA", "PFOS", "Σ9PFAS"))) %>%
+    mutate(
+    pfas_value = if_else(
+      pfas == "Σ9PFAS",
+      sum(pfas_value[pfas != "Σ9PFAS"], na.rm = TRUE),
+      pfas_value
+    )
+  ) %>% 
+  mutate(
+    pfas_value = if_else(pfas_value >= loq & pfas_value < max_loq, paste0(format(round(pfas_value, digits = 2), nsmall = 2), "*"), paste0(format(round(pfas_value, digits = 2), nsmall = 2)))
+  )
+  
+pfas_data_0_wide <- pivot_wider(pfas_data_0 %>% select(-c(loq, max_loq)), names_from = pfas, values_from = pfas_value) %>% ungroup()
 
 ```
 
@@ -375,6 +413,28 @@ map_Area_conc <-
   guides(fill = FALSE)
 
 map_Area_conc
+
+## year
+  # ggmap(tar_read(stadia_map)) +
+  # geom_point(aes(x = longitude, y = latitude, color = year, fill = year, shape = Area), data = pfas_data_eq0_wide, position = position_dodge(width = 10), size = 2, alpha = 0.7) +
+  # labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  # scale_color_viridis(option = "magma") +
+  # scale_fill_viridis(option = "magma") +
+  # scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  # #change legend label to Area and \u03A39PFAS:
+  # labs(color = "Year", shape = "Area")+
+  # guides(fill = FALSE)
+
+## depth
+  # ggmap(tar_read(stadia_map)) +
+  # geom_point(aes(x = longitude, y = latitude, color = depth, fill = depth, shape = Area), data = pfas_data_eq0_wide %>% filter(depth < 200), position = position_dodge(width = 10), size = 2, alpha = 0.7) +
+  # labs(x = "Longitude [°E]", y = "Latitude [°N]") +
+  # scale_color_viridis(option = "magma") +
+  # scale_fill_viridis(option = "magma") +
+  # scale_shape_manual(values = c(21, 22, 23, 24, 25)) +
+  # #change legend label to Area and \u03A39PFAS:
+  # labs(color = "Depth [m]", shape = "Area")+
+  # guides(fill = FALSE)
 ```
 
 ```{r}
@@ -577,7 +637,9 @@ library(FactoMineR)
 # apply PCA
 pca <- pfas_data_eq0_wide %>% select(Mud:"Σ9PFAS") %>%
   select(-"Σ9PFAS", 
-         -"PFDoDA", -"PFTrDA"
+         -"PFDoDA",
+         -"PFTrDA",
+         -depth
          ) %>%
   prcomp(center = TRUE, scale. = TRUE)
 
@@ -683,7 +745,7 @@ wrap_plots(model_preds)
 
 ## Latitude hypothesis
 
-```{r latitude-model}
+```{r latitude-hyp-modeling}
 #| fig-cap: "Residuals of the model for PFAS concentration vs Mud plotted against latitude. The red line is the fitted loess curve. The residuals are not independent of latitude, indicating that the model does not capture all the variation in the data. We see that this is driven primarily by Areas I and V."
 #| label: fig-residuals-v-latitude
 # residuals vs latitude without Area categories
@@ -730,7 +792,6 @@ Area_wmodels %>%
   xlab("Latitude")
 
 # test colours:
-
 # testcol <- expand_grid(my_l = seq(0,100, 10), my_c= seq(0,100, 10)) %>% 
 #   # mutate(color = muted("red", l = my_l, c = my_c))
 #   mutate(hei = map2(my_l, my_c, ~muted("blue", .x, .y))
@@ -750,48 +811,86 @@ Area_wmodels %>%
 ```
 
 
-```{r latitude-hyp}
+```{r latitude-hyp-coeff}
 # latitude coefficient hypothesis
-pfas_glm <- function(in_dat) {
-  glmmTMB(data = in_dat, formula = pfas_value ~ Mud + latitude, family = tweedie(link = "log"))
-}
-
-Arealat_wmodels <-
-  pfas_data_eq0 %>%
-  filter(!(pfas %in% c("PFHxDA", "PFDoDA", "PFTrDA"))) %>%
-  ## inspect effect of excluding ares with high PFAS concentrations and high Mud content
-  # filter(!(Area %in% c("I", "V"))) %>%
-  mutate(
-    # pfas = fct_relevel(pfas, c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA", "PFDA","PFHpA" )),
-    pfas_label = pfas
-  ) %>%
-  arrange(pfas) %>%
-  group_by(pfas) %>%
-  nest() %>%
-  mutate(
-    m_fit = map(data, pfas_glm),
-    tidy = map(m_fit, ~ broom.mixed::tidy(.x, exponentiate = TRUE)),
-    glance = map(m_fit, broom.mixed::glance),
-    augment = map2(m_fit, data, ~ broom.mixed::augment(.x, .y)),
-    pred = map(m_fit, ~ ggpredict(.x, terms = c("Mud [1:100]"))),
-    simulated = map(m_fit, ~ simulate(.x, nsim = 25, seed = 12345)),
-    sim_data = map2(
-      simulated, data, ~ bind_cols(.x, .y) %>%
-        pivot_longer(cols = matches("sim"), names_to = "simgroup", values_to = "sim")
-    ),
-    reg_table = map(m_fit, ~ tbl_regression(.x, exponentiate = TRUE, tidy_fun = broom.mixed::tidy), estimate_fun = purrr::partial(style_ratio, digits = 3))
-  )
-
 tbl_merge(
-  (Arealat_wmodels %>% 
+  (Area_wmodels %>% 
     filter(pfas %in% c("Σ9PFAS", "PFOS", "PFOA", "PFNA", "PFUnDA", "PFDA","PFHpDA")))$reg_table,
     tab_spanner =  Area_wmodels %>% pull(pfas) %>% as.character()
     ) %>% as_gt()
 
-  
 ```
 
 Applying the model with covariates 'C~{PFAS}~ = Mud + latitude', yields the significance of covariates shown in table above. Latitude is not a significant covariate for Σ9PFAS. Some trends in the individual PFASes point toward lower concentrations at higher latitudes for PFOS, PFUnA, and PFDcA, whereas PFOA may increase going northward. However, as shown in @fig-residuals-v-latitude, Areas I and V exert leverage on the data and local hotspots serve as hotspots driving much of the observed spatial variance. Thus, differences (and lack of thereof) may be driven largely by locations I and V. We also see that the variation is bigger for Areas I and V, and correspondingly, for low and high latitudes. This makes inference on the background levels difficult.
+
+## Depth and time hypothesis
+
+```{r depth-hyp}
+#| fig-cap: "Residuals of the model for PFAS concentration vs Mud plotted against depth. The red line is the fitted loess curve."
+#| label: fig-residuals-v-depth
+# residuals vs depth with Area categories
+
+# pfas_w_models %>%
+#   unnest(augment) %>% 
+#   ggplot(aes(x = depth, y = .resid)) +
+#   geom_point(aes(fill = Area), shape = 21, color = "black") +
+#   geom_smooth(color = "#AF2D2D") +
+#   scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c")) +
+#   facet_wrap(~pfas, scale = "free")+
+#   ylab("Residuals")+
+#   xlab("Depth [m]")
+
+
+pfas_data_eq0 %>%
+  # unnest(augment) %>% 
+  ggplot(aes(depth, pfas_value))+
+  geom_point(aes(fill = Area), shape = 21, color = "black") +
+  facet_wrap(~pfas, scale = "free")+
+   scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
+  ylab("Concentration [µg/kg dry weight]")+
+  xlab("Depth [m]")
+ggsave("depth_vs_conc.png", width = 7, height = 4.5)
+
+
+Area_wmodels %>%
+  filter(pfas == "PFOA") %>% 
+  unnest(augment) %>%
+  ggplot(aes(Area, depth))+
+  geom_jitter(aes(fill = Area), shape = 21, color = "black", width = 0.15) +
+  geom_boxplot(alpha = 0.5, outliers = FALSE)+
+  # facet_wrap(~pfas, scale = "free")+
+   scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
+  ylab("Depth [m]")+
+  xlab("Area")+
+  theme(legend.position = "none")
+ggsave("depth_vs_area.png", width = 7, height = 4.5)
+
+
+```
+
+```{r year-hypothesis}
+
+Area_wmodels %>%
+  unnest(augment) %>% 
+  ggplot(aes(year, pfas_value))+
+  geom_point(aes(fill = Area), shape = 21, color = "black") +
+  facet_wrap(~pfas, scale = "free")+
+   scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
+  ylab("Concentration [µg/kg dry weight]")+
+  xlab("Year")
+
+
+Area_wmodels %>%
+  unnest(augment) %>% 
+  filter(pfas == "Σ9PFAS") %>% 
+  ggplot(aes(Area, year))+
+  geom_jitter(aes(fill = Area), shape = 21, color = "black", width = 0.15) +
+  geom_boxplot(alpha = 0.5, outliers = FALSE)+   scale_fill_manual(values = c("#2c7bb6", "#abd9e9", "#ffffbf", "#fdae61", "#d7191c"))+
+  ylab("Year")+
+  xlab("Area")+
+  theme(legend.position = "none")
+
+```
 
 # Supplementary
 
@@ -801,9 +900,10 @@ Applying the model with covariates 'C~{PFAS}~ = Mud + latitude', yields the sign
 #| out-width: 100%
 ggpairs(pfas_data_eq0_wide %>% 
           select(
-Area, Mud, TOC, Σ9PFAS, PFOS, PFOA, PFNA, PFUnDA, PFDA, PFHpDA
+Area, Mud, TOC, depth, Σ9PFAS, PFOS, PFOA, PFNA, PFUnDA, PFDA, PFHpDA
           ),
         progress = FALSE)
+
 ```
 
 ## Regression table
@@ -1046,9 +1146,10 @@ pred_data_toc %>% ggplot(aes(x, predicted)) +
 ## Concentrations table
 
 ```{r}
-pfas_data_eq0_wide %>% select(-sample_id3) %>% gt(groupname_col = "Area",rowname_col = "year") %>%
-  fmt_number(columns = 3:16, decimals = 2) %>%
-  fmt_number(columns = longitude:latitude, decimals = 2) %>% 
+pfas_data_0_wide %>% select(-sample_id3) %>% gt(groupname_col = "Area",rowname_col = "year") %>%
+  fmt_number(columns = 2:6, decimals = 2) %>%
+  fmt_number(columns = depth, decimals = 0) %>%
+  fmt_number(columns = Mud, decimals = 0) %>%
   cols_label(
     longitude = md("Longitude"),
     latitude = md("Latitude")
@@ -1056,10 +1157,10 @@ pfas_data_eq0_wide %>% select(-sample_id3) %>% gt(groupname_col = "Area",rowname
   sub_values(
   columns = everything(),
   rows = everything(),
-  values = 0,
+  values = "0.00",
   replacement = "-"
-) %>% 
-  gtsave("si_conc_table.docx")
+) #%>% 
+  #gtsave("si_conc_table.docx")
 
 ```
 
@@ -1086,7 +1187,7 @@ simtibble %>% ggplot(aes(x = sim)) +
   facet_wrap(~mu)+
   geom_vline(aes(xintercept = str_extract(mu, "\\d") %>% as.numeric()), linetype = "dotted", color = "red")+
   xlab("Response value")+
-  ylab("Frequence #")
+  ylab("Frequency [#]")
 ```
 ## Chemical compounds table
 ```{r}
