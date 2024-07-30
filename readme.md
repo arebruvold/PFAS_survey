@@ -1,0 +1,3 @@
+# Readme
+
+Repository contains code and data to reproduce analysis and visualizations for the journal paper [*Per- and polyfluoroalkyl substances (PFAS) in surface sediments of the North-east Atlantic Ocean: A non-natural PFAS background*](https://www.sciencedirect.com/science/article/pii/S2666765724000632). The data is under CC-BY 4.0 and NLOD licenses, and if the data are used in scientific publications, we expect users to cite the data and make acknowledgements. [See the MarChem database for more.](https://marchem-editor.hi.no/)
