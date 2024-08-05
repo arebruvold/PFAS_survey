@@ -9,7 +9,6 @@ format:
 ---
 # Todo
 
-* Fix names in paper vs figures.
 * Could
     - Change CI on TOC vs Mud to Gamma, maybe others also.
   
@@ -693,6 +692,8 @@ pfas_w_models %>%
   ggplot(aes(x = Estimate, y = pfas)) + geom_point() + geom_errorbarh(aes(xmin = CI_low, xmax = CI_high)) + geom_vline(xintercept = 1, linetype = "dashed", color = "#AF2D2D") + labs(x = "Exponentiated coefficient of Mud", y = "PFAS") +
   scale_x_continuous(breaks = c(1, 1.01, 1.02, 1.03, 1.04, 1.05))+
   scale_y_discrete(limits=rev)
+
+
 ```
 
 ## Area hypothesis
@@ -841,8 +842,8 @@ Applying the model with covariates 'C~{PFAS}~ = Mud + latitude', yields the sign
 #   xlab("Depth [m]")
 
 
-pfas_data_eq0 %>%
-  # unnest(augment) %>% 
+Area_wmodels %>%
+  unnest(augment) %>% 
   ggplot(aes(depth, pfas_value))+
   geom_point(aes(fill = Area), shape = 21, color = "black") +
   facet_wrap(~pfas, scale = "free")+
